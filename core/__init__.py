@@ -1,0 +1,1 @@
+"""Módulo Core de infraestrutura, bootstrap, resiliência e barramento de eventos."""
