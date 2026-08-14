@@ -1,411 +1,1276 @@
 """
-VitaVoz Clinical Operating System™
-Módulo Principal da Interface Gráfica (Streamlit Presentation Layer).
-- Versão Comercial B2B Final (Ready for Pitch).
+VitaVoz — Plataforma de Gestão Operacional do Acompanhamento Pós-Procedimento
+Versão Piloto Operacional / Multi-Tenant Hardened
 """
 
 import os
+import re
 import time
-from datetime import datetime
-import pandas as pd
+import sqlite3
+import uuid
+import hashlib
+import bcrypt
+import secrets
+import io
+import html
+from datetime import datetime, timedelta, timezone
+import urllib.parse
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 import streamlit as st
 
-# Configuração inicial da página (Deve ser a PRIMEIRA instrução Streamlit)
-st.set_page_config(
-    page_title="VitaVoz | Clinical OS",
-    layout="wide",
-    page_icon="🦷",
-    initial_sidebar_state="expanded"
-)
+# Import para Transcrição Gratuita
+import speech_recognition as sr
 
-# Imports das configurações e infraestrutura
-from src.config.settings import DB_NAME
-from src.core.bootstrap import AppContainer
-from src.database.connection import get_connection
-from src.database.seed.demo_seed import initialize_database
-from src.ui.components.care_timeline import render_care_timeline
-from src.ui.components.trend_chart import render_patient_trend_chart
-
-# Inicialização do Banco de Dados
-if not os.path.exists(DB_NAME):
-    initialize_database()
-
-# Resolução do Grafo de Dependências
-container = AppContainer()
-services = container.resolve()
-
-patient_repo = services["patient_repo"]
-evolution_repo = services["evolution_repo"]
-protocol_repo = services["protocol_repo"]
-dashboard_repo = services["dashboard_repo"]
-care_event_repo = services["care_event_repo"]
-protocol_service = services["protocol_service"]
-evolution_service = services["evolution_service"]
-patient_service = services["patient_service"]
-clinical_service = services["clinical_service"]
-pdf_report_service = services["pdf_report_service"]
-
-# Captura de Parâmetros de URL
-query_params = st.query_params
-view_param = query_params.get("view", None)
+# Cria a pasta para armazenar os áudios fisicamente no servidor
+os.makedirs("patient_audios", exist_ok=True)
 
 # ==============================================================================
-# BLINDAGEM DE BANCO DE DADOS: CONSULTA SEGURA
+# 1. CONSTANTES E VALIDAÇÃO ESTRITA DE AMBIENTE
 # ==============================================================================
-class PacienteFilaDTO:
-    def __init__(self, id, paciente, procedimento, pos_op, status, score, motivo, alertas_clinicos=None, **kwargs):
-        self.id = id
-        self.paciente = paciente
-        self.procedimento = procedimento
-        self.pos_op = pos_op
-        self.status = status
-        self.score = score
-        self.motivo = motivo
-        self.alertas_clinicos = alertas_clinicos
+DB_NAME = "vitavoz_prod_v27.db"
+SLA_MINUTOS_PADRAO = 30
+SESSION_TIMEOUT_MINUTES = 30
+MAX_REPORT_CHARS = 3000
+MAX_CONDUCT_CHARS = 3000
+IDEMPOTENCY_SECONDS = 30
 
-def get_fila_segura():
-    """Consulta blindada para evitar repetição de notas e garantir dados perfeitos."""
-    with get_connection() as conn:
-        c = conn.cursor()
-        c.execute("""
-            SELECT 
-                p.id,
-                p.nome as paciente, 
-                p.procedimento, 
-                p.alertas_clinicos,
-                'D+' || CAST(e.dia AS TEXT) as pos_op, 
-                e.status_alerta as status, 
-                e.score, 
-                e.motivo
-            FROM pacientes p
-            JOIN evolucoes e ON p.id = e.paciente_id
-            WHERE e.id = (
-                SELECT MAX(id) 
-                FROM evolucoes 
-                WHERE paciente_id = p.id
-            )
-            ORDER BY e.score ASC
-        """)
-        return [PacienteFilaDTO(**dict(row)) for row in c.fetchall()]
+# Validação de variáveis de ambiente no arranque
+BOOTSTRAP_SECRET = os.environ.get("VITAVOZ_BOOTSTRAP_SECRET", "DEV_SECRET_KEY")
+BACKUP_ENCRYPTION_KEY = os.environ.get("VITAVOZ_BACKUP_KEY", BOOTSTRAP_SECRET)
+PUBLIC_BASE_URL = os.environ.get("VITAVOZ_BASE_URL", "http://localhost:8501")
 
+if not BOOTSTRAP_SECRET:
+    st.error(
+        "🚨 ERRO DE INFRAESTRUTURA: "
+        "A variável 'VITAVOZ_BOOTSTRAP_SECRET' é obrigatória no servidor."
+    )
+    st.stop()
 
-# Estilização CSS B2B Corporativa
-st.markdown(
-    """
-<style>
-    .stApp { background-color: #F8FAFC; }
-    .badge-alerta { background-color: #FEF2F2; border: 1px solid #FCA5A5; color: #991B1B; padding: 4px 8px; border-radius: 6px; font-size: 12px; font-weight: bold; }
-    .badge-atencao { background-color: #FEF3C7; border: 1px solid #FCD34D; color: #92400E; padding: 4px 8px; border-radius: 6px; font-size: 12px; font-weight: bold; }
-    .badge-normal { background-color: #F0FDF4; border: 1px solid #86EFAC; color: #166534; padding: 4px 8px; border-radius: 6px; font-size: 12px; font-weight: bold; }
-    .inbox-card { background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 10px; padding: 16px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); border-left: 4px solid #3B82F6; }
-    .inbox-card.p1 { border-left-color: #EF4444; background-color: #FEF2F2; }
-    .stat-card { background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 12px; padding: 20px; text-align: center; box-shadow: 0 2px 4px rgba(15, 23, 42, 0.05); margin-bottom: 15px; }
-    .stat-value { font-size: 28px; font-weight: bold; color: #0F172A; margin-bottom: 5px; }
-    .stat-label { font-size: 13px; color: #64748B; font-weight: 500; text-transform: uppercase; }
-</style>
+SLA_BY_PRIORITY = {
+    1: 5,   # Prioridade Operacional 1 (Declaração de emergência pelo paciente)
+    2: 15,  # Prioridade Operacional 2 (Dor >= 7 ou Piorou)
+    3: 30   # Prioridade Operacional 3 (Padrão)
+}
+
+STATUS_RECEIVED = "RECEIVED"
+STATUS_ACKNOWLEDGED = "ACKNOWLEDGED"
+STATUS_ESCALATED = "ESCALATED"
+STATUS_PENDING_NURSE = "PENDING_NURSE"
+STATUS_RESOLVED = "RESOLVED"
+
+ACTIVE_STATUSES = (STATUS_RECEIVED, STATUS_ACKNOWLEDGED, STATUS_ESCALATED, STATUS_PENDING_NURSE)
+
+ACTOR_PATIENT = "PATIENT"
+ACTOR_DOCTOR = "DOCTOR"
+ACTOR_INTERNAL = "INTERNAL_USER"
+ACTOR_SYSTEM = "SYSTEM"
+
+VALID_TRANSITIONS = {
+    STATUS_RECEIVED: [STATUS_ACKNOWLEDGED],
+    STATUS_ACKNOWLEDGED: [STATUS_ESCALATED, STATUS_RESOLVED],
+    STATUS_ESCALATED: [STATUS_RESOLVED, STATUS_PENDING_NURSE],
+    STATUS_PENDING_NURSE: [STATUS_RESOLVED],
+    STATUS_RESOLVED: []
+}
+
+ROLE_PERMISSIONS = {
+    f"{STATUS_RECEIVED}->{STATUS_ACKNOWLEDGED}": ["NURSE", "ASSISTANT", "ADMIN"],
+    f"{STATUS_ACKNOWLEDGED}->{STATUS_ESCALATED}": ["NURSE", "ADMIN"],
+    f"{STATUS_ACKNOWLEDGED}->{STATUS_RESOLVED}": ["NURSE", "ASSISTANT", "ADMIN"],
+    f"{STATUS_ESCALATED}->{STATUS_PENDING_NURSE}": ["DOCTOR"],
+    f"{STATUS_ESCALATED}->{STATUS_RESOLVED}": ["DOCTOR", "NURSE", "ADMIN"],
+    f"{STATUS_PENDING_NURSE}->{STATUS_RESOLVED}": ["NURSE", "ASSISTANT", "ADMIN"]
+}
+
+st.set_page_config(page_title="VitaVoz | Gestão Operacional", layout="wide", page_icon="📋")
+st.markdown("""
+    <style>
+    .main-header { font-size: 32px; font-weight: 700; color: #0F172A; margin-bottom: 4px; }
+    .sub-header { font-size: 16px; color: #475569; margin-bottom: 25px; line-height: 1.4; }
+    .hide-sidebar [data-testid="stSidebar"] { display: none !important; }
+    .metric-card { padding: 15px; border-radius: 8px; border: 1px solid #E2E8F0; text-align: center; }
+    .metric-val { font-size: 24px; font-weight: bold; margin-bottom: 5px; }
+    .step-pill { display: inline-block; padding: 6px 12px; border-radius: 16px; font-size: 13px; font-weight: bold; margin-right: 8px; }
+    .step-active { background-color: #3B82F6; color: white; }
+    .step-done { background-color: #10B981; color: white; }
+    .step-idle { background-color: #E2E8F0; color: #64748B; }
+    </style>
 """, unsafe_allow_html=True)
 
+# ==============================================================================
+# 2. CORE SERVICES & PROVIDERS
+# ==============================================================================
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
-@st.cache_data(ttl=300, show_spinner=False)
-def _get_cached_dossier_bytes(patient_id: int, events_count: int, evolutions_count: int) -> bytes:
-    p = patient_service.get_patient_by_id(patient_id)
-    evs = evolution_repo.get_evolutions_by_patient(patient_id)
-    ces = care_event_repo.get_events_by_patient(patient_id)
-    proto = protocol_service.get_protocol_for_patient(p.protocol_id) if p else None
-    buf = pdf_report_service.generate_patient_dossier(
-        patient=p, evolutions=evs, care_events=ces, protocol=proto,
-        doctor_name="Dr. Davi", clinic_name="Clínica Prime • Odontologia Especializada",
-    )
-    return buf.getvalue()
+def format_local_time(iso_utc_str: str) -> str:
+    if not iso_utc_str: return "-"
+    try:
+        dt = datetime.fromisoformat(iso_utc_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone(timedelta(hours=-3))).strftime('%d/%m/%Y %H:%M')
+    except Exception:
+        return iso_utc_str
 
+def format_iso_to_br_date(iso_date_str: str) -> str:
+    if not iso_date_str: return "-"
+    try:
+        return datetime.strptime(iso_date_str, "%Y-%m-%d").strftime("%d/%m/%Y")
+    except ValueError:
+        return iso_date_str
 
-def render_prontuario_view(patient_id: int):
-    """Renderiza o prontuário completo."""
-    if st.button("← Voltar para a Fila / Visão Geral"):
-        st.session_state["prontuario_aberto_id"] = None
-        st.rerun()
+def normalize_phone(phone: str) -> str:
+    return re.sub(r"\D", "", phone)
 
-    paciente = patient_service.get_patient_by_id(patient_id)
-    evolucoes = evolution_repo.get_evolutions_by_patient(patient_id)
-    care_events = care_event_repo.get_events_by_patient(patient_id)
-    protocolo_ativo = protocol_service.get_protocol_for_patient(paciente.protocol_id)
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
-    st.markdown(f"### Prontuário Digital: {paciente.nome}")
-    st.markdown(f"**{paciente.procedimento}** | Protocolo: {protocolo_ativo.nome_procedimento if protocolo_ativo else paciente.protocolo}")
+def verify_password(password: str, hashed: str) -> bool:
+    return bcrypt.checkpw(password.encode(), hashed.encode())
 
-    if hasattr(paciente, 'alertas_clinicos') and paciente.alertas_clinicos and str(paciente.alertas_clinicos).strip() not in ("Nenhum", "Sem comorbidades", "None"):
-        st.markdown(f"""
-        <div style='background-color:#FFFBEB; border-left:4px solid #F59E0B; padding:10px; border-radius:6px; margin-bottom:15px;'>
-            <b style='color:#92400E; font-size:12px; text-transform:uppercase;'>⚠️ Alertas de Anamnese:</b><br>
-            <span style='color:#B45309; font-size:13px;'>{paciente.alertas_clinicos}</span>
-        </div>
-        """, unsafe_allow_html=True)
+def hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
 
-    pdf_bytes = _get_cached_dossier_bytes(paciente.id, len(care_events), len(evolucoes))
-    st.download_button("📄 Exportar Dossiê de Auditoria (PDF)", data=pdf_bytes, file_name=f"Dossie_{paciente.nome}.pdf", mime="application/pdf", type="primary")
+def generate_secure_token() -> str:
+    return secrets.token_urlsafe(32)
 
-    ultima_ev = evolucoes[0] if evolucoes else None
-    if ultima_ev and ultima_ev.status_alerta not in ("🟢 Normal", "🟢 Atendido"):
-        st.error(f"🚨 Parecer da Inteligência Artificial: {ultima_ev.motivo}")
+class AudioTranscriptionService:
+    """Provider isolado para transcrição de áudio via API pública do Google."""
+    @staticmethod
+    def transcribe(audio_bytes: bytes) -> str:
+        r = sr.Recognizer()
+        try:
+            with sr.AudioFile(io.BytesIO(audio_bytes)) as source:
+                audio_data = r.record(source)
+            return r.recognize_google(audio_data, language="pt-BR")
+        except sr.UnknownValueError:
+            raise ValueError("Áudio não compreendido")
+        except sr.RequestError as e:
+            raise ConnectionError(f"Erro na API de transcrição: {e}")
+        except Exception as e:
+            raise RuntimeError(f"Falha técnica ao processar áudio: {e}")
 
-    with st.container(border=True):
-        render_patient_trend_chart(evolucoes, protocolo_ativo, evolution_repo)
+class BackupService:
+    MAGIC = b"VTVZ"
+    VERSION = b"\x01"
 
-    with st.container(border=True):
-        render_care_timeline(care_events)
+    @staticmethod
+    def _derive_key(secret: str, salt: bytes) -> bytes:
+        kdf = Scrypt(salt=salt, length=32, n=2**14, r=8, p=1)
+        return kdf.derive(secret.encode())
 
-    with st.container(border=True):
-        st.markdown("#### ⚡ Conduta Médica e Resolução")
-        conduta = st.text_area("Orientação ao paciente (Será enviada via WhatsApp):")
-        if st.button("Assinar Conduta e Resolver Alerta", type="primary", key=f"btn_resolver_{paciente.id}"):
-            if ultima_ev:
-                clinical_service.resolve_evolution_alert(paciente.id, ultima_ev.id, conduta)
-                # RECÁLCULO DO VITASCORE (Insere nova evolução mitigada para o gráfico subir)
-                with get_connection() as conn:
-                    c = conn.cursor()
-                    c.execute("""
-                        INSERT INTO evolucoes (paciente_id, dia, dor, inchaco, febre, tendencia, relato, score, status_alerta, data_registro, motivo, conduta_medico)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (paciente.id, ultima_ev.dia, 2, 'Melhorando', 'Não', 'Melhorando', "Conduta médica aplicada via VitaVoz.", 92, '🟢 Atendido', datetime.now().strftime("%d/%m/%Y %H:%M"), "Risco clínico mitigado.", conduta))
-                    conn.commit()
-            st.toast("✅ Conduta registrada no prontuário! O paciente foi estabilizado e o Score recalculado.", icon="🟢")
-            time.sleep(1)
-            st.session_state["prontuario_aberto_id"] = None
-            st.rerun()
+    @staticmethod
+    def generate_backup_encrypted(secret: str) -> bytes:
+        salt = secrets.token_bytes(16)
+        nonce = secrets.token_bytes(12)
+        key = BackupService._derive_key(secret, salt)
+        aesgcm = AESGCM(key)
 
+        with get_db() as src_conn:
+            mem_db = sqlite3.connect(":memory:")
+            src_conn.backup(mem_db)
+            db_bytes = mem_db.serialize()
+            mem_db.close()
+
+        ciphertext = aesgcm.encrypt(nonce, db_bytes, None)
+        return BackupService.MAGIC + BackupService.VERSION + salt + nonce + ciphertext
 
 # ==============================================================================
-# VISÕES MOBILE EXCLUSIVAS DO JOÃO (ACESSADAS VIA URL ?view=...)
+# 3. BANCO DE DADOS & MIGRATIONS
 # ==============================================================================
-if view_param == "emergencia_joao":
-    st.markdown("<h3 style='color:#DC2626;'>🚨 ATENDIMENTO DE EMERGÊNCIA</h3>", unsafe_allow_html=True)
-    st.caption("Acesso Direto do Cirurgião (Plantão)")
+def get_db():
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON;")
+    conn.execute("PRAGMA journal_mode = WAL;")
+    conn.execute("PRAGMA busy_timeout = 5000;")
+    return conn
 
-    joao_id = patient_repo.get_joao_id()
-    paciente = patient_service.get_patient_by_id(joao_id)
-    evolucoes = evolution_repo.get_evolutions_by_patient(joao_id)
-    ultima_ev = evolucoes[0] if evolucoes else None
+@st.cache_resource
+def run_migrations():
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("BEGIN EXCLUSIVE")
+        c.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER)")
+        ver_row = c.execute("SELECT MAX(version) as v FROM schema_version").fetchone()
+        current_version = ver_row['v'] if ver_row['v'] else 0
 
-    if ultima_ev and ultima_ev.status_alerta == '🟢 Atendido':
-        st.success(f"✅ O alerta do paciente **{paciente.nome}** já foi resolvido.")
-        st.info(f"**Conduta assinada:** {ultima_ev.conduta_medico}")
+        if current_version < 1:
+            c.execute("""CREATE TABLE clinics (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, protocol_duration_days INTEGER DEFAULT 15, created_at TEXT)""")
+            c.execute("""CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, clinic_id INTEGER REFERENCES clinics(id) ON DELETE RESTRICT, name TEXT, username TEXT UNIQUE, password_hash TEXT, role TEXT CHECK(role IN ('NURSE', 'ASSISTANT', 'DOCTOR', 'ADMIN')), failed_login_attempts INTEGER DEFAULT 0, locked_until TEXT, active INTEGER DEFAULT 1)""")
+            c.execute("""CREATE TABLE patients (id INTEGER PRIMARY KEY AUTOINCREMENT, clinic_id INTEGER REFERENCES clinics(id) ON DELETE RESTRICT, name TEXT, phone TEXT, procedure_name TEXT, procedure_date TEXT, allergies TEXT, notes TEXT, token_hash TEXT UNIQUE, token_expires_at TEXT, revoked_at TEXT, active INTEGER DEFAULT 1, created_at TEXT)""")
+            c.execute("""CREATE TABLE patient_reports_log (id INTEGER PRIMARY KEY AUTOINCREMENT, patient_id INTEGER REFERENCES patients(id), submission_uuid TEXT UNIQUE, timestamp TEXT)""")
+            c.execute("""CREATE TABLE reports (id INTEGER PRIMARY KEY AUTOINCREMENT, report_uuid TEXT UNIQUE, patient_id INTEGER REFERENCES patients(id) ON DELETE RESTRICT, clinic_id INTEGER REFERENCES clinics(id) ON DELETE RESTRICT, operational_priority INTEGER CHECK(operational_priority BETWEEN 1 AND 3) DEFAULT 3, priority_reason TEXT, patient_declared_emergency INTEGER DEFAULT 0, sla_target_minutes INTEGER DEFAULT 30, sla_breached INTEGER DEFAULT 0, pain INTEGER CHECK(pain BETWEEN 0 AND 10), trend TEXT, symptoms TEXT, transcript_original TEXT, transcript_source TEXT, status TEXT CHECK(status IN ('RECEIVED', 'ACKNOWLEDGED', 'ESCALATED', 'PENDING_NURSE', 'RESOLVED')), assigned_user_id INTEGER REFERENCES users(id) ON DELETE RESTRICT, conduct TEXT, resolution_source TEXT, received_at TEXT, acknowledged_at TEXT, escalated_at TEXT, doctor_viewed_at TEXT, doctor_responded_at TEXT, resolved_at TEXT, doctor_token_hash TEXT, doctor_link_expires_at TEXT)""")
+            c.execute("""CREATE TABLE audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, clinic_id INTEGER REFERENCES clinics(id), report_uuid TEXT, patient_id INTEGER, actor_type TEXT, actor_name TEXT, actor_user_id INTEGER, action TEXT, old_status TEXT, new_status TEXT, details TEXT, timestamp TEXT, previous_hash TEXT, event_hash TEXT)""")
+
+            c.execute("CREATE TRIGGER IF NOT EXISTS prevent_audit_update BEFORE UPDATE ON audit_events BEGIN SELECT RAISE(ABORT, 'Operação proibida: Tabela audit_events é append-only.'); END;")
+            c.execute("CREATE TRIGGER IF NOT EXISTS prevent_audit_delete BEFORE DELETE ON audit_events BEGIN SELECT RAISE(ABORT, 'Operação proibida: Tabela audit_events é append-only.'); END;")
+
+            c.execute("CREATE INDEX IF NOT EXISTS idx_patients_clinic ON patients(clinic_id)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_reports_patient ON reports(patient_id)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_reports_clinic ON reports(clinic_id)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_audit_clinic ON audit_events(clinic_id, timestamp)")
+            c.execute("INSERT INTO schema_version (version) VALUES (1)")
+
+        conn.commit()
+
+run_migrations()
+
+# ==============================================================================
+# 4. WORKFLOW & REPOSITORIES
+# ==============================================================================
+class DatabaseService:
+    @staticmethod
+    def log_audit(clinic_id, report_uuid, patient_id, actor_type, actor_name, actor_user_id, action, old_status, new_status, details, conn_override=None):
+        ts = utc_now().isoformat()
+        def _execute_log(c):
+            last_event = c.execute("SELECT event_hash FROM audit_events WHERE clinic_id = ? ORDER BY id DESC LIMIT 1", (clinic_id,)).fetchone()
+            prev_hash = last_event['event_hash'] if last_event else "GENESIS_HASH"
+            data_str = f"{clinic_id}|{report_uuid}|{patient_id}|{actor_type}|{actor_name}|{actor_user_id}|{action}|{old_status}|{new_status}|{details}|{ts}|{prev_hash}"
+            event_hash = hashlib.sha256(data_str.encode()).hexdigest()
+            c.execute("""INSERT INTO audit_events (clinic_id, report_uuid, patient_id, actor_type, actor_name, actor_user_id, action, old_status, new_status, details, timestamp, previous_hash, event_hash) 
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                      (clinic_id, report_uuid, patient_id, actor_type, actor_name, actor_user_id, action, old_status, new_status, details, ts, prev_hash, event_hash))
+        if conn_override: _execute_log(conn_override)
+        else:
+            with get_db() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                _execute_log(conn.cursor())
+                conn.commit()
+
+    @staticmethod
+    def verify_hash_chain(clinic_id):
+        with get_db() as conn:
+            audits = conn.cursor().execute("SELECT * FROM audit_events WHERE clinic_id = ? ORDER BY id ASC", (clinic_id,)).fetchall()
+        prev_hash = "GENESIS_HASH"
+        for aud in audits:
+            if aud['previous_hash'] != prev_hash:
+                return False, f"Violação de sequência no log ID #{aud['id']}."
+            data_str = f"{aud['clinic_id']}|{aud['report_uuid']}|{aud['patient_id']}|{aud['actor_type']}|{aud['actor_name']}|{aud['actor_user_id']}|{aud['action']}|{aud['old_status']}|{aud['new_status']}|{aud['details']}|{aud['timestamp']}|{aud['previous_hash']}"
+            if aud['event_hash'] != hashlib.sha256(data_str.encode()).hexdigest():
+                return False, f"Adulteração de dados detectada no evento ID #{aud['id']}!"
+            prev_hash = aud['event_hash']
+        return True, f"Integridade confirmada. Cadeia técnica de {len(audits)} registros verificada."
+
+    @staticmethod
+    def submit_patient_report(clinic_id, patient_id, submission_uuid, pain, trend, symptoms_list, transcript_original, is_emergency, audio_bytes=None):
+        now_dt = utc_now()
+        now_str = now_dt.isoformat()
+        dez_min_atras = (now_dt - timedelta(minutes=10)).isoformat()
+
+        oper_priority = 3
+        priority_reason = "NORMAL_FOLLOWUP"
+        if pain >= 7 or trend == "🔴 Piorou":
+            oper_priority = 2
+            priority_reason = "HIGH_PAIN_OR_CLINICAL_WORSENING"
+        if is_emergency:
+            oper_priority = 1
+            priority_reason = "PATIENT_DECLARED_EMERGENCY"
+
+        sla_alvo = SLA_BY_PRIORITY[oper_priority]
+        report_uuid = str(uuid.uuid4())
+
+        # Salva fisicamente o áudio no servidor caso tenha sido enviado
+        if audio_bytes:
+            with open(f"patient_audios/{report_uuid}.wav", "wb") as f:
+                f.write(audio_bytes)
+
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("BEGIN IMMEDIATE")
+
+            patient_check = c.execute(
+                "SELECT id FROM patients WHERE id = ? AND clinic_id = ? AND active = 1",
+                (patient_id, clinic_id)
+            ).fetchone()
+            if not patient_check:
+                conn.rollback()
+                return False, "Paciente não pertence à operação informada ou está inativo."
+
+            already_processed = c.execute("SELECT COUNT(*) FROM patient_reports_log WHERE submission_uuid = ?", (submission_uuid,)).fetchone()[0]
+            if already_processed > 0:
+                conn.rollback(); return False, "Este relato já foi processado na rede. Aguarde a avaliação da equipe."
+
+            count = c.execute("SELECT COUNT(*) FROM patient_reports_log WHERE patient_id = ? AND timestamp > ?", (patient_id, dez_min_atras)).fetchone()[0]
+            if count >= 5:
+                conn.rollback(); return False, "Limite de envios excedido (Máximo 5 relatos a cada 10 minutos)."
+
+            c.execute("INSERT INTO patient_reports_log (patient_id, submission_uuid, timestamp) VALUES (?, ?, ?)", (patient_id, submission_uuid, now_str))
+
+            c.execute("""
+                INSERT INTO reports (
+                    clinic_id, report_uuid, patient_id, operational_priority, priority_reason,
+                    patient_declared_emergency, sla_target_minutes, pain, trend, symptoms,
+                    transcript_original, status, received_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'RECEIVED', ?)
+            """, (clinic_id, report_uuid, patient_id, oper_priority, priority_reason, 1 if is_emergency else 0, sla_alvo, pain, trend, ",".join(symptoms_list), transcript_original, now_str))
+
+            DatabaseService.log_audit(clinic_id, report_uuid, patient_id, ACTOR_PATIENT, "Paciente", None, "REPORT_SUBMITTED", "NONE", STATUS_RECEIVED, f"Relato submetido (Motivo: {priority_reason}).", conn_override=c)
+            conn.commit()
+        return True, "OK"
+
+    @staticmethod
+    def transition_internal_report(clinic_id, report_uuid, new_status, actor_user_id, actor_role, actor_name, details, conduct=None, resolution_source=None):
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("BEGIN IMMEDIATE")
+
+            rep_data = c.execute("SELECT status, patient_id, received_at, sla_target_minutes, patient_declared_emergency FROM reports WHERE report_uuid = ? AND clinic_id = ?", (report_uuid, clinic_id)).fetchone()
+            if not rep_data:
+                conn.rollback(); return False, "Relato de protocolo não encontrado."
+
+            current_status = rep_data['status']
+            patient_id = rep_data['patient_id']
+
+            if new_status not in VALID_TRANSITIONS.get(current_status, []):
+                conn.rollback(); return False, f"Transição de {current_status} para {new_status} é inválida."
+
+            required_roles = ROLE_PERMISSIONS.get(f"{current_status}->{new_status}", [])
+            if actor_role not in required_roles:
+                conn.rollback(); return False, f"Acesso Negado: Perfil {actor_role} sem permissão de transição."
+
+            if conduct and (not conduct.strip() or len(conduct) > MAX_CONDUCT_CHARS):
+                conn.rollback(); return False, f"Conduta operacional inválida ou excede {MAX_CONDUCT_CHARS} caracteres."
+
+            now = utc_now()
+            now_str = now.isoformat()
+            timestamp_field = {STATUS_ACKNOWLEDGED: "acknowledged_at", STATUS_RESOLVED: "resolved_at"}.get(new_status)
+
+            updates = ["status = ?"]
+            params = [new_status]
+            if timestamp_field: updates.extend([f"{timestamp_field} = ?"]); params.append(now_str)
+            if conduct: updates.extend(["conduct = ?"]); params.append(conduct)
+            if resolution_source: updates.extend(["resolution_source = ?"]); params.append(resolution_source)
+            if new_status == STATUS_ACKNOWLEDGED: updates.extend(["assigned_user_id = ?"]); params.append(actor_user_id)
+
+            if current_status == STATUS_RECEIVED and new_status == STATUS_ACKNOWLEDGED:
+                espera_min = (now - datetime.fromisoformat(rep_data['received_at'])).total_seconds() / 60
+                is_breached = 1 if espera_min > rep_data['sla_target_minutes'] else 0
+                updates.extend(["sla_breached = ?"]); params.append(is_breached)
+
+            if rep_data['patient_declared_emergency'] == 1 and new_status == STATUS_RESOLVED and current_status != STATUS_PENDING_NURSE:
+                conn.rollback(); return False, "Bloqueio: Relatos de emergência exigem escalonamento e conduta médica antes do encerramento."
+
+            params.extend([report_uuid, current_status, clinic_id])
+            c.execute(f"UPDATE reports SET {', '.join(updates)} WHERE report_uuid = ? AND status = ? AND clinic_id = ?", tuple(params))
+
+            if c.rowcount != 1:
+                conn.rollback(); return False, "Concorrência: O Relato sofreu interações por outro operador."
+
+            DatabaseService.log_audit(clinic_id, report_uuid, patient_id, ACTOR_INTERNAL, actor_name, actor_user_id, "STATUS_CHANGE", current_status, new_status, details, conn_override=c)
+            conn.commit()
+        return True, "Sucesso"
+
+    @staticmethod
+    def reassign_internal_report(clinic_id, report_uuid, actor_user_id, actor_role, actor_name, target_user_id):
+        if actor_role not in ["NURSE", "ADMIN"]:
+            return False, "Acesso Negado: Apenas Enfermeiros e Administradores podem reatribuir filas."
+
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("BEGIN IMMEDIATE")
+
+            target_user = c.execute("SELECT name, role FROM users WHERE id = ? AND clinic_id = ? AND active = 1", (target_user_id, clinic_id)).fetchone()
+            if not target_user:
+                conn.rollback(); return False, "Usuário alvo é inválido ou inativo."
+            if target_user['role'] not in ["NURSE", "ASSISTANT", "ADMIN"]:
+                conn.rollback(); return False, "Papel do usuário incompatível com a linha de responsabilidade."
+
+            rep_data = c.execute("SELECT status, patient_id, assigned_user_id FROM reports WHERE report_uuid = ? AND clinic_id = ?", (report_uuid, clinic_id)).fetchone()
+            if not rep_data:
+                conn.rollback(); return False, "Relato não encontrado."
+
+            current_status = rep_data['status']
+            old_assignee_id = rep_data['assigned_user_id']
+            patient_id = rep_data['patient_id']
+
+            old_name = "Ninguém"
+            if old_assignee_id:
+                old_user_row = c.execute("SELECT name FROM users WHERE id = ?", (old_assignee_id,)).fetchone()
+                if old_user_row: old_name = old_user_row['name']
+
+            c.execute("UPDATE reports SET assigned_user_id = ? WHERE report_uuid = ? AND status = ? AND clinic_id = ?", (target_user_id, report_uuid, current_status, clinic_id))
+            if c.rowcount != 1:
+                conn.rollback(); return False, "Falha atômica na transação de reatribuição."
+
+            DatabaseService.log_audit(clinic_id, report_uuid, patient_id, ACTOR_INTERNAL, actor_name, actor_user_id, "REASSIGNMENT", current_status, current_status, f"Caso reatribuído de {old_name} para {target_user['name']}.", conn_override=c)
+            conn.commit()
+        return True, "Sucesso"
+
+    @staticmethod
+    def escalate_to_doctor(clinic_id, report_uuid, actor_user_id, actor_name, actor_role):
+        if actor_role not in ["NURSE", "ADMIN"]: return None
+        doc_token = generate_secure_token()
+        exp = (utc_now() + timedelta(minutes=30)).isoformat()
+
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("BEGIN IMMEDIATE")
+
+            # Permite escalonar quem já está em ESCALATED para gerar um novo link
+            rep_data = c.execute("SELECT patient_id, status FROM reports WHERE report_uuid = ? AND clinic_id = ? AND status IN (?, ?)", (report_uuid, clinic_id, STATUS_ACKNOWLEDGED, STATUS_ESCALATED)).fetchone()
+            if not rep_data:
+                conn.rollback(); return None
+
+            patient_id = rep_data['patient_id']
+            curr_status = rep_data['status']
+            c.execute("""UPDATE reports SET status = ?, escalated_at = ?, doctor_token_hash = ?, doctor_link_expires_at = ? 
+                         WHERE report_uuid = ? AND status = ? AND clinic_id = ?""",
+                      (STATUS_ESCALATED, utc_now().isoformat(), hash_token(doc_token), exp, report_uuid, curr_status, clinic_id))
+            if c.rowcount != 1:
+                conn.rollback(); return None
+            DatabaseService.log_audit(clinic_id, report_uuid, patient_id, ACTOR_INTERNAL, actor_name, actor_user_id, "REPORT_ESCALATED", curr_status, STATUS_ESCALATED, "Link médico gerado/atualizado.", conn_override=c)
+            conn.commit()
+        return doc_token
+
+    @staticmethod
+    def consume_doctor_token(report_uuid, clinic_id, conduct, doc_name="Médico"):
+        if not conduct or not conduct.strip() or len(conduct) > MAX_CONDUCT_CHARS:
+            return False, "Conduta estrutural inválida."
+
+        now_str = utc_now().isoformat()
+        new_status = STATUS_PENDING_NURSE
+        timestamp_field = "doctor_responded_at"
+
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("BEGIN IMMEDIATE")
+
+            rep_data = c.execute("SELECT patient_id FROM reports WHERE report_uuid = ? AND clinic_id = ? AND status = 'ESCALATED'", (report_uuid, clinic_id)).fetchone()
+            if not rep_data:
+                conn.rollback(); return False, "Referência da interface corrompida ou acesso já consumido na fila de espera."
+            patient_id = rep_data['patient_id']
+
+            c.execute(f"""UPDATE reports SET status = ?, {timestamp_field} = ?, conduct = ?, resolution_source = 'DOCTOR', doctor_token_hash = NULL, doctor_link_expires_at = NULL 
+                          WHERE report_uuid = ? AND status = ? AND doctor_token_hash IS NOT NULL AND doctor_link_expires_at > ? AND clinic_id = ?""",
+                      (new_status, now_str, conduct, report_uuid, STATUS_ESCALATED, now_str, clinic_id))
+            if c.rowcount != 1:
+                conn.rollback(); return False, "Expiração de Token ou Conduta executada por outro terminal/médico."
+
+            DatabaseService.log_audit(clinic_id, report_uuid, patient_id, ACTOR_DOCTOR, doc_name, None, "DOCTOR_CONDUCT", STATUS_ESCALATED, new_status, f"Conduta Clínica Registrada: {conduct}", conn_override=c)
+            conn.commit()
+        return True, "Sucesso"
+
+class HealthService:
+    @staticmethod
+    def get_status(clinic_id=None) -> dict:
+        try:
+            with get_db() as conn:
+                c = conn.cursor()
+                db_ok = c.execute("SELECT 1").fetchone()[0] == 1
+                journal_mode = c.execute("PRAGMA journal_mode").fetchone()[0]
+                schema_ver = c.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
+                last_backup = "-"
+                pending_count, breached_count = 0, 0
+
+                if clinic_id:
+                    l_b = c.execute("SELECT timestamp FROM audit_events WHERE clinic_id = ? AND action = 'DATABASE_BACKUP' ORDER BY id DESC LIMIT 1", (clinic_id,)).fetchone()
+                    if l_b: last_backup = format_local_time(l_b['timestamp'])
+                    pending_count = c.execute(f"SELECT COUNT(*) FROM reports WHERE clinic_id = ? AND status IN {ACTIVE_STATUSES}", (clinic_id,)).fetchone()[0]
+                    breached_count = c.execute("SELECT COUNT(*) FROM reports WHERE clinic_id = ? AND (sla_breached = 1 OR (status = 'RECEIVED' AND (julianday('now') - julianday(received_at))*1440 > sla_target_minutes))", (clinic_id,)).fetchone()[0]
+
+            return {"healthy": True, "db_connection": "OK" if db_ok else "ERROR", "journal_mode": journal_mode.upper(), "schema_version": f"v{schema_ver}", "last_backup": last_backup, "pending_reports": pending_count, "breached_slas": breached_count}
+        except Exception:
+            return {"healthy": False, "error": "Falha interna de infraestrutura de telemetria."}
+
+# ==============================================================================
+# 5. AUTH E MIDDLEWARES
+# ==============================================================================
+def require_auth():
+    if not st.session_state.get("autenticado", False):
+        st.error("Acesso Negado. Faça login.")
         st.stop()
 
-    st.warning(f"**Paciente:** {paciente.nome} | D+3 de {paciente.procedimento}")
-    if ultima_ev:
-        st.error(f"**Alerta IA:** {ultima_ev.motivo}")
-        st.markdown(f"**Último Relato:** *\"{ultima_ev.relato}\"*")
+    with get_db() as conn:
+        user_check = conn.cursor().execute("SELECT id, clinic_id, active, role FROM users WHERE id = ?", (st.session_state.get("user_id"),)).fetchone()
 
-    st.markdown("---")
-    conduta_rapida = st.text_area("Sua Conduta Médica:", value="Iniciar analgésico de resgate e aplicar compressa fria. Caso persista por 2h, retornar à clínica.")
-    if st.button("🚀 Enviar Conduta para o WhatsApp do Paciente", type="primary", use_container_width=True):
-        if ultima_ev:
-            clinical_service.resolve_evolution_alert(paciente.id, ultima_ev.id, conduta_rapida)
-            with get_connection() as conn:
-                c = conn.cursor()
-                c.execute("""
-                    INSERT INTO evolucoes (paciente_id, dia, dor, inchaco, febre, tendencia, relato, score, status_alerta, data_registro, motivo, conduta_medico)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (paciente.id, ultima_ev.dia, 2, 'Melhorando', 'Não', 'Melhorando', "Conduta médica aplicada via VitaVoz Mobile.", 92, '🟢 Atendido', datetime.now().strftime("%d/%m/%Y %H:%M"), "Risco clínico mitigado.", conduta_rapida))
-                conn.commit()
-        st.success("✅ Conduta enviada, VitaScore recalculado e alerta encerrado!")
-        time.sleep(1.5)
-        st.rerun()
-    st.stop()
+    if (not user_check
+        or user_check['active'] != 1
+        or user_check['clinic_id'] != st.session_state.get("clinic_id")
+        or user_check['role'] != st.session_state.get("user_role")):
+        st.session_state.clear()
+        st.error("🔒 Sessão inválida ou revogada.")
+        st.stop()
 
-elif view_param == "medico_p1":
-    st.markdown("### 👨‍⚕️ Painel Médico Mobile (Somente P1 Críticos)")
-    st.caption("Visão enxuta exclusiva para emergências pós-operatórias.")
+    if "last_activity" in st.session_state:
+        if (utc_now() - st.session_state.last_activity).total_seconds() / 60 > SESSION_TIMEOUT_MINUTES:
+            st.session_state.clear()
+            st.error("🔒 Sessão expirada por inatividade.")
+            st.stop()
+    st.session_state.last_activity = utc_now()
 
-    fila_dtos = get_fila_segura()
-    p1_items = [d for d in fila_dtos if d.score < 60]
+def require_role(*allowed_roles):
+    require_auth()
+    if st.session_state.get("user_role") not in allowed_roles:
+        st.error("🔒 Acesso Negado: Perfil sem privilégios para esta interface.")
+        st.stop()
 
-    if len(p1_items) == 0:
-        st.success("🟢 Nenhum paciente crítico no momento. Plantão estabilizado.")
-    else:
-        st.error(f"🔴 Pacientes Críticos Aguardando Conduta: {len(p1_items)}")
+# ==============================================================================
+# 6. BOOTSTRAP TRANSACIONAL
+# ==============================================================================
+def check_bootstrap():
+    with get_db() as conn:
+        has_users = conn.cursor().execute("SELECT COUNT(*) FROM users").fetchone()[0] > 0
+    if not has_users:
+        st.warning("⚠️ Setup Inicial do Sistema (Primeira Instalação)")
+        with st.form("bootstrap_form"):
+            b_secret = st.text_input("Chave Mestre de Instalação (Bootstrap Secret)", type="password")
+            clinic_name = st.text_input("Nome da Operação/Clínica")
+            admin_user = st.text_input("Credencial Admin (ex: admin)")
+            admin_pwd = st.text_input("Senha Master (Mínimo 12 caracteres)", type="password")
+            if st.form_submit_button("Inicializar Ambiente Seguro"):
+                if b_secret != BOOTSTRAP_SECRET: st.error("Chave de instalação mestre incorreta.")
+                elif not clinic_name.strip(): st.error("O nome da operação/clínica é obrigatório.")
+                elif not admin_user.strip(): st.error("O usuário Admin é obrigatório.")
+                elif len(admin_pwd) < 12: st.error("A arquitetura exige mínimo de 12 caracteres.")
+                else:
+                    norm_admin = admin_user.strip().lower()
+                    with get_db() as conn:
+                        c = conn.cursor()
+                        c.execute("BEGIN IMMEDIATE")
+                        user_count = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+                        if user_count > 0:
+                            conn.rollback()
+                            st.error("O ambiente já foi inicializado por outro processo.")
+                            st.stop()
+                        c.execute("INSERT INTO clinics (name, created_at) VALUES (?, ?)", (clinic_name.strip(), utc_now().isoformat()))
+                        cid = c.lastrowid
+                        c.execute("INSERT INTO users (clinic_id, name, username, password_hash, role) VALUES (?, 'Administração Central', ?, ?, 'ADMIN')", (cid, norm_admin, hash_password(admin_pwd)))
+                        conn.commit()
+                    st.success("Ambiente inicializado. Faça login como Admin.")
+                    st.rerun()
+        st.stop()
 
-    for idx, dto in enumerate(p1_items):
-        st.markdown(f"""
-        <div class='inbox-card p1'>
-            <b>{dto.paciente}</b> — VitaScore™: {dto.score}<br>
-            <small>{dto.procedimento} ({dto.pos_op})</small><br>
-            <div style='margin-top:5px; color:#991B1B;'><b>IA:</b> {dto.motivo}</div>
-        </div>
-        """, unsafe_allow_html=True)
+check_bootstrap()
 
-        if st.button(f"⚡ Atender {dto.paciente}", key=f"btn_mob_{idx}", use_container_width=True):
-            st.session_state["prontuario_aberto_id"] = dto.id
+# ==============================================================================
+# 7. PORTAL DO CIRURGIÃO EXTERNO
+# ==============================================================================
+query_params = st.query_params
+
+if query_params.get("view") == "doctor" and "doc_validated_token" not in st.session_state:
+    raw_doc_token = query_params.get("token")
+    if raw_doc_token:
+        doc_token_hash = hash_token(raw_doc_token)
+        now_utc_str = utc_now().isoformat()
+
+        with get_db() as conn:
+            valid_report = conn.cursor().execute("SELECT r.report_uuid FROM reports r WHERE r.doctor_token_hash = ? AND r.status = ? AND r.doctor_link_expires_at > ?", (doc_token_hash, STATUS_ESCALATED, now_utc_str)).fetchone()
+
+        if valid_report:
+            st.session_state.doc_validated_token = raw_doc_token
             st.query_params.clear()
-            st.rerun()
-    st.stop()
+        else:
+            st.markdown('<div class="hide-sidebar"></div>', unsafe_allow_html=True)
+            st.error("🔒 Acesso Negado: O token do avaliador médico é inválido, expirou ou a conduta já foi finalizada pela equipe central.")
+            st.stop()
 
+if "doc_validated_token" in st.session_state:
+    st.markdown('<div class="hide-sidebar"></div>', unsafe_allow_html=True)
+    doc_token = st.session_state.get("doc_validated_token")
+    now_utc_str = utc_now().isoformat()
 
-# ==============================================================================
-# VISÃO PRINCIPAL DO COMPUTADOR
-# ==============================================================================
-with st.sidebar:
-    st.markdown("<h2 style='text-align: center; color: #0F172A;'>🦷 VitaVoz</h2>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #10B981; font-weight: bold; font-size: 12px;'>CLINICAL OS</p>", unsafe_allow_html=True)
+    with get_db() as conn:
+        report = conn.cursor().execute("""
+            SELECT r.*, p.name as patient_name, p.procedure_name, p.procedure_date 
+            FROM reports r JOIN patients p ON r.patient_id = p.id 
+            WHERE r.doctor_token_hash = ? AND r.status = ? AND r.doctor_link_expires_at > ?
+        """, (hash_token(doc_token), STATUS_ESCALATED, now_utc_str)).fetchone()
+
+    if not report:
+        del st.session_state.doc_validated_token
+        st.error("🔒 Token inválido ou conduta já registrada. Acesso descartado.")
+        st.stop()
+
+    if not report['doctor_viewed_at']:
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("BEGIN IMMEDIATE")
+            c.execute("UPDATE reports SET doctor_viewed_at = ? WHERE report_uuid = ? AND doctor_viewed_at IS NULL AND clinic_id = ?", (now_utc_str, report['report_uuid'], report['clinic_id']))
+            if c.rowcount == 1:
+                DatabaseService.log_audit(report['clinic_id'], report['report_uuid'], report['patient_id'], ACTOR_DOCTOR, "Médico Externo", None, "DOCTOR_ACCESS", report['status'], report['status'], "Link médico aberto.", conn_override=c)
+            conn.commit()
+
+    try: d_plus = (utc_now().date() - datetime.strptime(report['procedure_date'], "%Y-%m-%d").date()).days
+    except ValueError: d_plus = "?"
+
+    st.markdown("<div style='background-color: #991B1B; color: white; padding: 10px; border-radius: 5px; text-align: center; font-weight: bold; margin-bottom: 20px;'>🚨 SOLICITAÇÃO DE AVALIAÇÃO MÉDICA</div>", unsafe_allow_html=True)
+
+    st.markdown(f"### {html.escape(report['patient_name'])}")
+    st.markdown(f"**{html.escape(report['procedure_name'])} (D+{d_plus})**")
     st.divider()
 
-    menu_selecionado = st.radio(
-        "Navegação do Computador",
-        [
-            "👩‍⚕️ 1. Fila da Navegadora (Geral)",
-            "📊 2. Gestão Executiva & ROI (CEO)",
-            "👨‍⚕️ 3. AI Clinical Inbox (Visão Médico)",
-            "📱 4. Portal do Paciente (WhatsApp)"
-        ],
+    st.error(f"**Dor Escala Numérica:** {report['pain']}/10 | **Evolução Declarada:** {html.escape(report['trend'])} | **Sintomas Extras:** {html.escape(report['symptoms'])}")
+    if report['transcript_original']: st.markdown(f"> *\"{html.escape(report['transcript_original'])}\"*")
+
+    audio_path = f"patient_audios/{report['report_uuid']}.wav"
+    if os.path.exists(audio_path):
+        st.audio(audio_path)
+
+    st.divider()
+    st.markdown("### 📝 Registro de Orientação / Conduta Médica (Acesso Único)")
+
+    with st.form("doctor_conduct_form"):
+        c_med1, c_med2, c_med3 = st.columns([2, 1, 1])
+        with c_med1:
+            med_nome = st.text_input("Identificação do Profissional (Nome):")
+        with c_med2:
+            med_crm = st.text_input("CRM (Opcional):")
+        with c_med3:
+            med_crm_uf = st.text_input("UF CRM (Opcional):")
+
+        conduta_acao = st.radio("Ação de Retorno à Equipe Operacional:", [
+            "Manter acompanhamento remoto padronizado",
+            "Orientação clínica à equipe assistencial",
+            "Retorno presencial ambulatorial",
+            "Encaminhar para Pronto Atendimento Imediato"
+        ])
+        observacao = st.text_area("Observação/Conduta registrada (Obrigatório):")
+
+        if st.form_submit_button("Registrar e Enviar Conduta", type="primary"):
+            if not med_nome.strip() or not observacao.strip():
+                st.error("Identificação base e observação clínica são obrigatórias.")
+            else:
+                doc_ident = med_nome.strip()
+                if med_crm.strip():
+                    uf_str = f"/{med_crm_uf.strip().upper()}" if med_crm_uf.strip() else ""
+                    doc_ident += f" (CRM {med_crm.strip()}{uf_str})"
+
+                conduta_formatada = f"[{conduta_acao}] {observacao.strip()}"
+                ok, msg = DatabaseService.consume_doctor_token(report['report_uuid'], report['clinic_id'], conduta_formatada, doc_name=doc_ident)
+
+                if ok:
+                    del st.session_state.doc_validated_token
+                    st.success("Conduta registrada com sucesso. A equipe foi notificada operacionalmente para execução. Acesso revogado e token finalizado.")
+                    time.sleep(2); st.rerun()
+                else:
+                    st.error(f"Falha técnica: {msg}")
+    st.stop()
+
+# ==============================================================================
+# 8. PORTAL DO PACIENTE
+# ==============================================================================
+if query_params.get("view") == "portal" and "patient_session" not in st.session_state:
+    raw_token = query_params.get("token")
+    if not raw_token: st.error("Token de acesso base ausente na string."); st.stop()
+
+    with get_db() as conn:
+        patient = conn.cursor().execute("SELECT id, clinic_id, active, revoked_at, token_expires_at FROM patients WHERE token_hash = ? AND active = 1", (hash_token(raw_token),)).fetchone()
+
+    if not patient or patient['revoked_at']:
+        st.error("Acesso revogado pela gestão central do prontuário."); st.stop()
+    if utc_now() > datetime.fromisoformat(patient['token_expires_at']):
+        st.error("O período de acompanhamento previsto e liberado por token foi concluído."); st.stop()
+
+    st.session_state.patient_session = {"id": patient['id'], "clinic_id": patient['clinic_id']}
+    st.session_state.patient_session_last_activity = utc_now()
+    st.session_state.form_submission_uuid = str(uuid.uuid4())
+    st.query_params.clear()
+
+if "patient_session" in st.session_state:
+    st.markdown('<div class="hide-sidebar"></div>', unsafe_allow_html=True)
+
+    pid = st.session_state.patient_session['id']
+    cid = st.session_state.patient_session['clinic_id']
+    with get_db() as conn:
+        patient_db = conn.cursor().execute("SELECT * FROM patients WHERE id = ? AND clinic_id = ?", (pid, cid)).fetchone()
+
+    if not patient_db or patient_db['active'] != 1 or patient_db['revoked_at'] or utc_now() > datetime.fromisoformat(patient_db['token_expires_at']):
+        del st.session_state.patient_session
+        st.error("🔒 Sua sessão foi revogada, inativada ou expirou na base do sistema.")
+        st.stop()
+
+    if (utc_now() - st.session_state.patient_session_last_activity).total_seconds() / 60 > 30:
+        del st.session_state.patient_session
+        st.error("🔒 Sessão expirada por inatividade local. Acesse o canal novamente através do seu link no WhatsApp/Email.")
+        st.stop()
+    st.session_state.patient_session_last_activity = utc_now()
+
+    try: d_plus = (utc_now().date() - datetime.strptime(patient_db['procedure_date'], "%Y-%m-%d").date()).days
+    except ValueError: d_plus = "?"
+
+    st.markdown("### VitaVoz")
+    st.markdown(f"Olá, **{html.escape(patient_db['name'].split()[0])}** 👋")
+    st.info("Este canal organiza o fluxo de comunicação entre você e a clínica. **Ele não é monitorado 24 horas por dia e não substitui atendimento presencial.**")
+
+    with get_db() as conn:
+        ultimo_relato = conn.cursor().execute("SELECT status FROM reports WHERE patient_id = ? AND clinic_id = ? ORDER BY id DESC LIMIT 1", (pid, cid)).fetchone()
+
+    if ultimo_relato:
+        st.markdown("#### Status do Seu Último Acompanhamento")
+        st_val = ultimo_relato['status']
+        s1 = "step-done" if st_val != STATUS_RECEIVED else "step-active"
+        s2 = "step-done" if st_val in [STATUS_ESCALATED, STATUS_PENDING_NURSE, STATUS_RESOLVED] else ("step-active" if st_val == STATUS_ACKNOWLEDGED else "step-idle")
+        s3 = "step-done" if st_val == STATUS_RESOLVED else ("step-active" if st_val in [STATUS_ESCALATED, STATUS_PENDING_NURSE] else "step-idle")
+        s4 = "step-done" if st_val == STATUS_RESOLVED else "step-idle"
+
+        st.markdown(f"""
+            <span class="step-pill {s1}">1. Recebido</span>
+            <span class="step-pill {s2}">2. Em Análise</span>
+            <span class="step-pill {s3}">3. Avaliação Médica</span>
+            <span class="step-pill {s4}">4. Concluído</span>
+            <br><br>
+        """, unsafe_allow_html=True)
+
+    # NOVO: Escala Visual Analógica de Dor (Padrão OMS)
+    escala_oms = [
+        "0 - Sem Dor 😀", "1", "2 - Leve 🙂", "3", "4 - Moderada 😐",
+        "5", "6 - Forte 🙁", "7", "8 - Muito Forte 😫", "9", "10 - Insuportável 😭"
+    ]
+    dor_selecionada = st.select_slider("Nível de dor (Escala Visual Analógica):", options=escala_oms, value="0 - Sem Dor 😀")
+    dor_val = int(dor_selecionada.split(" ")[0])
+
+    tendencia = st.radio("Comparando com as últimas 24h:", ["🟢 Melhorou", "⚪ Igual", "🔴 Piorou"], horizontal=True, label_visibility="collapsed", index=1)
+
+    # NOVO: Multiselect com o Placeholder em Português
+    sintomas = st.multiselect(
+        "Sintomas Ocultos",
+        ["Sangramento", "Inchaço", "Febre", "Dormência", "Outro"],
+        placeholder="Você está passando por algum desses?",
         label_visibility="collapsed"
     )
 
     st.divider()
-    st.markdown("#### 🔗 Links do Celular do João")
-    st.code("?view=emergencia_joao", language="text")
-    st.caption("1. Link de Emergência Direta")
-    st.code("?view=medico_p1", language="text")
-    st.caption("2. Painel Médico (P1 Críticos)")
+
+    st.markdown("📝 **Evolução Clínica** (Grave um áudio ou digite)")
+    audio_val = st.audio_input("🎤 Clique no microfone para gravar seu relato")
+
+    # --------------------------------------------------------------------------
+    # FEATURE 1: TRANSCRIÇÃO GRATUITA DE ÁUDIO VIA SPEECH_RECOGNITION
+    # --------------------------------------------------------------------------
+    transcription_key = f"texto_transcrito_{st.session_state.form_submission_uuid}"
+
+    if transcription_key not in st.session_state:
+        st.session_state[transcription_key] = ""
+
+    if audio_val:
+        audio_bytes = audio_val.getvalue()
+        current_audio_hash = hashlib.md5(audio_bytes).hexdigest()
+
+        if st.session_state.get("last_audio_hash") != current_audio_hash:
+            with st.spinner("🧠 Transcrevendo áudio..."):
+                try:
+                    texto_resultado = AudioTranscriptionService.transcribe(audio_bytes)
+                    st.session_state[transcription_key] = texto_resultado
+                    st.session_state["last_audio_hash"] = current_audio_hash
+                    st.rerun()
+                except ValueError:
+                    st.warning("Não foi possível compreender o áudio perfeitamente. Por favor, ajuste o texto abaixo se necessário.")
+                    st.session_state["last_audio_hash"] = current_audio_hash
+                except ConnectionError:
+                    st.warning("Serviço de transcrição temporariamente indisponível. Por favor, digite o relato no campo de texto.")
+                    st.session_state["last_audio_hash"] = current_audio_hash
+
+    texto_final = st.text_area(
+        "Verifique e edite o texto antes de enviar (Ou digite manualmente):",
+        key=transcription_key
+    )
+
+    is_emergency = st.checkbox("🚨 Considero que preciso de atendimento médico imediato.")
+    if is_emergency:
+        st.error("🚨 **ISTO NÃO É UM SERVIÇO DE EMERGÊNCIA E NÃO REALIZA MONITORAMENTO.**\n\nSe você apresenta falta de ar, dor intensa, perda de consciência, sangramento importante ou outra situação grave, **não aguarde resposta pelo VitaVoz. Procure atendimento presencial ou ligue 192 imediatamente.**")
+
+    st.caption("🔒 **Aviso de Privacidade e Dados:** Suas respostas são processadas sob sigilo profissional para fins exclusivos do seu acompanhamento pós-procedimento.")
+
+    if st.button("Submeter Evolução do Quadro", type="primary", use_container_width=True):
+        if not texto_final.strip() and not audio_val and dor_val < 3 and not is_emergency:
+            st.warning("Grave um áudio, digite um texto ou indique uma evolução perceptível no seu quadro."); st.stop()
+        if len(texto_final) > MAX_REPORT_CHARS:
+            st.error(f"Limite excedido. Sintetize em menos de {MAX_REPORT_CHARS} caracteres."); st.stop()
+
+        submission_id = st.session_state.get("form_submission_uuid", str(uuid.uuid4()))
+        raw_audio_data = audio_val.getvalue() if audio_val else None
+
+        ok_spam, msg_spam = DatabaseService.submit_patient_report(
+            cid, pid, submission_id, dor_val, tendencia, sintomas, texto_final, is_emergency, raw_audio_data
+        )
+
+        if not ok_spam:
+            st.error(msg_spam); st.stop()
+
+        st.session_state.form_submission_uuid = str(uuid.uuid4())
+        st.session_state["last_audio_hash"] = ""
+
+        if is_emergency:
+            st.error("🚨 **SINALIZAÇÃO OPERACIONAL REGISTRADA NA FILA.** Não aguarde retorno da Clínica em situações agudas, procure o SAMU (192) ou o hospital de referência.")
+        else:
+            st.success("✓ Seu relato foi recebido e encaminhado para avaliação na fila da equipe técnica.")
+            st.info("A equipe poderá avaliar seu relato conforme o fluxo operacional da clínica no horário útil.")
+    st.stop()
+
+# ==============================================================================
+# 9. BACKOFFICE LOGIN
+# ==============================================================================
+if not st.session_state.get("autenticado", False):
+    st.markdown('<div class="main-header" style="text-align: center; margin-top: 50px;">VitaVoz Operacional</div>', unsafe_allow_html=True)
+    col1, col2, col3 = st.columns([1, 1, 1])
+    with col2:
+        with st.form("login_form"):
+            usuario = st.text_input("Usuário do Sistema")
+            senha = st.text_input("Credencial", type="password")
+            if st.form_submit_button("Autenticar Conexão Segura", use_container_width=True):
+                norm_user = usuario.strip().lower()
+                with get_db() as conn:
+                    user_db = conn.cursor().execute("SELECT * FROM users WHERE username = ? AND active = 1", (norm_user,)).fetchone()
+
+                if user_db:
+                    if user_db['locked_until'] and utc_now() < datetime.fromisoformat(user_db['locked_until']):
+                        st.error("O serviço bloqueou o acesso à esta conta temporariamente (Security Limit).")
+                    elif verify_password(senha, user_db["password_hash"]):
+                        with get_db() as conn:
+                            conn.cursor().execute("UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = ?", (user_db['id'],))
+                            conn.commit()
+                        st.session_state.update({"autenticado": True, "user_name": user_db["name"], "user_id": user_db["id"], "clinic_id": user_db["clinic_id"], "user_role": user_db["role"], "last_activity": utc_now()})
+                        DatabaseService.log_audit(user_db['clinic_id'], "NONE", None, ACTOR_INTERNAL, user_db['name'], user_db['id'], "LOGIN_SUCCESS", "NONE", "NONE", "Autenticação criptográfica de backend.")
+                        st.rerun()
+                    else:
+                        attempts = user_db['failed_login_attempts'] + 1
+                        lock = (utc_now() + timedelta(minutes=15)).isoformat() if attempts >= 5 else None
+                        with get_db() as conn:
+                            conn.cursor().execute("UPDATE users SET failed_login_attempts = ?, locked_until = ? WHERE id = ?", (attempts, lock, user_db['id']))
+                            conn.commit()
+                        DatabaseService.log_audit(user_db['clinic_id'], "NONE", None, ACTOR_SYSTEM, "Security Service", None, "LOGIN_FAILED", "NONE", "NONE", f"Tentativa de pareamento de senha incorreta em {norm_user} (Contagem: {attempts}).")
+                        if lock: DatabaseService.log_audit(user_db['clinic_id'], "NONE", None, ACTOR_SYSTEM, "Security Service", None, "ACCOUNT_LOCKED", "NONE", "NONE", f"Bloqueio impositivo para {norm_user}.")
+                        st.error("Credenciais inválidas.")
+                else: st.error("Credenciais inválidas ou usuário inativo.")
+    st.stop()
+
+require_auth()
+OPERADOR_ATUAL = st.session_state["user_name"]
+OPERADOR_ID = st.session_state["user_id"]
+CLINICA_ATUAL_ID = st.session_state["clinic_id"]
+ROLE_ATUAL = st.session_state["user_role"]
+
+st.markdown('<div class="main-header">VitaVoz</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-header">Plataforma de Gestão Operacional do Acompanhamento Pós-Procedimento</div>', unsafe_allow_html=True)
+
+with st.sidebar:
+    st.markdown(f"👤 **{html.escape(OPERADOR_ATUAL)}** ({ROLE_ATUAL})")
+    if st.button("Finalizar Sessão Protegida", type="secondary"):
+        st.session_state.clear(); st.rerun()
 
     st.divider()
-    with st.expander("⚙️ Configurações (Admin)", expanded=False):
-        if st.button("🔄 Sincronizar Base de Dados", use_container_width=True):
-            initialize_database()
-            st.toast("Sistema sincronizado com novos nomes!", icon="✅")
-            st.rerun()
+    menu_opcoes = ["📊 Dashboard Inteligente", "📥 Fila Operacional"]
+    if ROLE_ATUAL in ["NURSE", "ASSISTANT", "ADMIN"]: menu_opcoes.append("🗂️ Histórico de Pacientes")
+    if ROLE_ATUAL in ["NURSE", "ADMIN"]: menu_opcoes.append("🔗 Cadastrar Paciente")
+    if ROLE_ATUAL == "ADMIN":
+        menu_opcoes.append("👥 Usuários e Acessos")
+        menu_opcoes.append("🩺 Health Check Operacional")
+    menu_opcoes.append("⚙️ Segurança da Conta")
+    menu = st.radio("Navegação Restrita", menu_opcoes)
+
+# ==============================================================================
+# 10. DASHBOARD B2B & BACKOFFICE
+# ==============================================================================
+if menu == "📊 Dashboard Inteligente":
+    require_role("NURSE", "ASSISTANT", "ADMIN")
+    st.markdown("## 📊 Inteligência de Adoção e Performance (T1-T4)")
+
+    hoje = utc_now().replace(hour=0, minute=0, second=0).isoformat()
+    with get_db() as conn:
+        c = conn.cursor()
+        t_hoje = c.execute("SELECT COUNT(*) FROM reports WHERE clinic_id = ? AND received_at >= ?", (CLINICA_ATUAL_ID, hoje)).fetchone()[0]
+        t_pend = c.execute(f"SELECT COUNT(*) FROM reports WHERE clinic_id = ? AND status IN {ACTIVE_STATUSES}", (CLINICA_ATUAL_ID,)).fetchone()[0]
+        reports_geral = c.execute("SELECT * FROM reports WHERE clinic_id = ?", (CLINICA_ATUAL_ID,)).fetchall()
+        t_pats = c.execute("SELECT COUNT(*) FROM patients WHERE clinic_id = ?", (CLINICA_ATUAL_ID,)).fetchone()[0]
+        t_engag = c.execute("SELECT COUNT(DISTINCT patient_id) FROM reports WHERE clinic_id = ?", (CLINICA_ATUAL_ID,)).fetchone()[0]
+
+    sla_violados_historicos = 0
+    t1_list, t2_list, t3_list, t4_list = [], [], [], []
+
+    for r in reports_geral:
+        rec_dt = datetime.fromisoformat(r['received_at'])
+        sla_alvo = r['sla_target_minutes'] if r['sla_target_minutes'] else SLA_BY_PRIORITY.get(r['operational_priority'], SLA_MINUTOS_PADRAO)
+
+        if r['sla_breached'] == 1 or (r['status'] == STATUS_RECEIVED and (utc_now() - rec_dt).total_seconds() / 60 > sla_alvo):
+            sla_violados_historicos += 1
+
+        if r['acknowledged_at']:
+            ack_dt = datetime.fromisoformat(r['acknowledged_at'])
+            t1_list.append((ack_dt - rec_dt).total_seconds() / 60)
+            if r['escalated_at']:
+                esc_dt = datetime.fromisoformat(r['escalated_at'])
+                t2_list.append((esc_dt - ack_dt).total_seconds() / 60)
+                if r['doctor_responded_at']:
+                    doc_dt = datetime.fromisoformat(r['doctor_responded_at'])
+                    t3_list.append((doc_dt - esc_dt).total_seconds() / 60)
+        if r['resolved_at']:
+            res_dt = datetime.fromisoformat(r['resolved_at'])
+            t4_list.append((res_dt - rec_dt).total_seconds() / 60)
+
+    avg_t1 = int(sum(t1_list)/len(t1_list)) if t1_list else 0
+    avg_t2 = int(sum(t2_list)/len(t2_list)) if t2_list else 0
+    avg_t3 = int(sum(t3_list)/len(t3_list)) if t3_list else 0
+    avg_t4 = round((sum(t4_list)/len(t4_list))/60, 1) if t4_list else 0
+    perc_engajamento = int((t_engag / t_pats) * 100) if t_pats > 0 else 0
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.markdown(f"<div class='metric-card'><div class='metric-val'>{t_hoje}</div><p>Entradas Hoje</p></div>", unsafe_allow_html=True)
+    c2.markdown(f"<div class='metric-card'><div class='metric-val'>{t_pend}</div><p>Ativos na Fila</p></div>", unsafe_allow_html=True)
+    c3.markdown(f"<div class='metric-card'><div class='metric-val' style='color:#991B1B;'>{sla_violados_historicos}</div><p>SLA de Triagem Violados</p></div>", unsafe_allow_html=True)
+    c4.markdown(f"<div class='metric-card'><div class='metric-val' style='color:#10B981;'>{perc_engajamento}%</div><p>Pacientes com Relato</p></div>", unsafe_allow_html=True)
+
+    st.markdown("#### Tempos Médios de Acompanhamento (Ciclo T1 a T4)")
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("T1 - Reconhecimento (Triagem)", f"{avg_t1} min")
+    c6.metric("T2 - Escalonamento", f"{avg_t2} min")
+    c7.metric("T3 - Tempo de Resposta Médica", f"{avg_t3} min")
+    c8.metric("T4 - Tempo Total até Resolução", f"{avg_t4} horas")
 
 
-# --- CAMADA 1: FILA DA NAVEGADORA ---
-if menu_selecionado == "👩‍⚕️ 1. Fila da Navegadora (Geral)":
-    if "prontuario_aberto_id" in st.session_state and st.session_state["prontuario_aberto_id"] is not None:
-        render_prontuario_view(st.session_state["prontuario_aberto_id"])
-    else:
-        st.markdown("### 👩‍⚕️ Central de Comando Operacional (Navegação)")
-        st.caption("Visão global da carteira ativa para a equipe de enfermagem.")
+elif menu == "📥 Fila Operacional":
+    require_role("NURSE", "ASSISTANT", "ADMIN")
+    st.markdown("## 📥 Triagem Operacional")
+    if st.button("🔄 Atualizar Processos"): st.rerun()
 
-        fila_dtos = get_fila_segura()
-        filtro_status = st.selectbox("Filtrar por Status:", ["Todos", "🔴 Alerta", "🟡 Atenção", "🟢 Normal", "🟢 Atendido"])
+    with get_db() as conn:
+        active_users = conn.cursor().execute("SELECT id, name, role FROM users WHERE clinic_id = ? AND active = 1 AND role IN ('NURSE', 'ASSISTANT', 'ADMIN')", (CLINICA_ATUAL_ID,)).fetchall()
+        reports = conn.cursor().execute(f"""
+            SELECT r.*, p.name as patient_name, p.phone as patient_phone, u.name as assigned_user_name
+            FROM reports r 
+            JOIN patients p ON r.patient_id = p.id 
+            LEFT JOIN users u ON r.assigned_user_id = u.id
+            WHERE r.status IN {ACTIVE_STATUSES} AND r.clinic_id = ?
+            ORDER BY 
+                CASE 
+                    WHEN r.operational_priority = 1 THEN 1
+                    WHEN r.status = 'PENDING_NURSE' THEN 2
+                    WHEN r.operational_priority = 2 THEN 3
+                    ELSE 4
+                END, r.received_at ASC
+        """, (CLINICA_ATUAL_ID,)).fetchall()
 
-        dtos_filtrados = fila_dtos if filtro_status == "Todos" else [d for d in fila_dtos if filtro_status in d.status]
+    if not reports: st.success("Fila limpa e organizada.")
 
-        for idx, dto in enumerate(dtos_filtrados):
-            col_info, col_btn = st.columns([4, 1])
-            with col_info:
-                st.markdown(f"**{dto.paciente}** | {dto.procedimento} ({dto.pos_op}) — Status: **{dto.status}** | VitaScore™: **{dto.score}**")
-            with col_btn:
-                if st.button("🔍 Ver Prontuário", key=f"nav_btn_{idx}_{dto.paciente}"):
-                    st.session_state["prontuario_aberto_id"] = dto.id
-                    st.rerun()
-            st.divider()
+    for r in reports:
+        ref_date = r['received_at']
+        if r['status'] == STATUS_ACKNOWLEDGED and r['acknowledged_at']: ref_date = r['acknowledged_at']
+        elif r['status'] == STATUS_ESCALATED and r['escalated_at']: ref_date = r['escalated_at']
+        elif r['status'] == STATUS_PENDING_NURSE and r['doctor_responded_at']: ref_date = r['doctor_responded_at']
 
-# --- CAMADA 2: GESTÃO EXECUTIVA & ROI (CEO) ---
-elif menu_selecionado == "📊 2. Gestão Executiva & ROI (CEO)":
-    st.markdown("### 📊 Executive Clinical Dashboard (CEO / Diretoria)")
-    st.caption("Métricas financeiras, operacionais e retorno sobre investimento (ROI) em tempo real.")
+        if not ref_date:
+            ref_date = r['received_at']
 
-    fila_dtos = get_fila_segura()
-    pacientes_monitorados = len(fila_dtos)
-    pacientes_risco = len([d for d in fila_dtos if d.score < 85])
-    alertas_resolvidos = 127
+        espera = int((utc_now() - datetime.fromisoformat(ref_date)).total_seconds() / 60)
+        box_style = "border: 1px solid #E2E8F0;"
+        sla_alvo = r['sla_target_minutes'] if r['sla_target_minutes'] else SLA_BY_PRIORITY.get(r['operational_priority'], SLA_MINUTOS_PADRAO)
+        minutos_restantes = sla_alvo - espera
 
-    roi = dashboard_repo.get_executive_roi_metrics()
+        if r['status'] == STATUS_RECEIVED:
+            if minutos_restantes > 5:
+                status_display = f"🟢 Protocolo Normal (Espera na Triagem: {espera}m / Alvo: {sla_alvo}m)"
+            elif minutos_restantes >= 0:
+                status_display = f"🟡 Atenção Operacional (Espera na Triagem: {espera}m / Alvo: {sla_alvo}m)"
+                box_style = "border: 2px solid #F59E0B;"
+            else:
+                status_display = f"🔴 Limite de SLA de Triagem Rompido (Atraso: {abs(minutos_restantes)}m / Alvo: {sla_alvo}m)"
+                box_style = "border: 2px solid #EF4444;"
+        elif r['status'] == STATUS_ACKNOWLEDGED: status_display = f"🔵 Em Atendimento Operacional (Há {espera}m)"
+        elif r['status'] == STATUS_ESCALATED: status_display = f"🟠 Com Avaliador Médico (Aguardando Resposta há {espera}m)"
+        elif r['status'] == STATUS_PENDING_NURSE: status_display = f"🟣 Ordem Médica Pendente de Execução (Fila Técnica há {espera}m)"
+        else: status_display = f"🟢 Estado Técnico: {r['status']}"
 
-    col1, col2, col3 = st.columns(3)
+        resp_text = f" | Resp: {html.escape(r['assigned_user_name'])}" if r['assigned_user_name'] else ""
+
+        if r['operational_priority'] == 1:
+            box_style = "border: 2px solid #991B1B; background-color: #FEF2F2;"
+            status_display = f"🚨 PRIORIDADE 1 — DECLARAÇÃO DE EMERGÊNCIA DO PACIENTE <br> {status_display} {resp_text}"
+        else: status_display += resp_text
+
+        safe_patient_name = html.escape(r['patient_name'])
+        with st.container():
+            st.markdown(f"<div style='padding:15px; border-radius:8px; margin-bottom:15px; {box_style}'><b>{safe_patient_name}</b> — {status_display}", unsafe_allow_html=True)
+
+            if r['status'] == STATUS_PENDING_NURSE: st.info(f"👨‍⚕️ Instrução Médica: **{html.escape(r['conduct'])}**")
+            elif r['status'] != STATUS_ESCALATED:
+                st.markdown(f"Escala Numérica de Dor: {r['pain']}/10 | Declaração de Evolução: {html.escape(r['trend'])}")
+                if r['transcript_original']: st.caption(f"\"{html.escape(r['transcript_original'])}\"")
+
+                audio_path = f"patient_audios/{r['report_uuid']}.wav"
+                if os.path.exists(audio_path):
+                    st.audio(audio_path)
+
+            if r['status'] == STATUS_RECEIVED:
+                if st.button("Assumir Responsabilidade", key=f"rev_{r['id']}", type="primary"):
+                    ok, msg = DatabaseService.transition_internal_report(CLINICA_ATUAL_ID, r['report_uuid'], STATUS_ACKNOWLEDGED, OPERADOR_ID, ROLE_ATUAL, OPERADOR_ATUAL, "Profissional assumiu acompanhamento.")
+                    if ok: st.rerun()
+                    else: st.error(msg)
+
+            elif r['status'] in [STATUS_ACKNOWLEDGED, STATUS_ESCALATED, STATUS_PENDING_NURSE]:
+                if r['assigned_user_id'] != OPERADOR_ID:
+                    if ROLE_ATUAL in ["NURSE", "ADMIN"]:
+                        with st.popover("🔄 Reatribuir Responsável"):
+                            user_opts = [(u['id'], f"{u['name']} ({u['role']})") for u in active_users]
+                            sel_user_id = st.selectbox("Selecione o novo responsável:", options=[u[0] for u in user_opts], format_func=lambda x: [u[1] for u in user_opts if u[0] == x][0])
+                            if st.button("Confirmar Reatribuição", key=f"reassign_{r['id']}"):
+                                ok, msg = DatabaseService.reassign_internal_report(CLINICA_ATUAL_ID, r['report_uuid'], OPERADOR_ID, ROLE_ATUAL, OPERADOR_ATUAL, sel_user_id)
+                                if ok: st.rerun()
+                                else: st.error(msg)
+                else:
+                    if r['status'] == STATUS_ACKNOWLEDGED:
+                        c1, c2, c3 = st.columns(3)
+                        with c1:
+                            if r['patient_declared_emergency'] == 1:
+                                st.warning("⚠️ Casos de Emergência devem ser Escalonados ao médico.")
+                            else:
+                                with st.popover("Encerrar Workflow"):
+                                    acao = st.selectbox("Ação", ["Dúvida Sanada Remotamente", "Agendamento Efetuado"])
+                                    if st.button("Confirmar", key=f"res_{r['id']}", type="primary"):
+                                        ok, msg = DatabaseService.transition_internal_report(CLINICA_ATUAL_ID, r['report_uuid'], STATUS_RESOLVED, OPERADOR_ID, ROLE_ATUAL, OPERADOR_ATUAL, f"Workflow Encerrado: [{acao}]", conduct=acao, resolution_source="TEAM")
+                                        if ok: st.rerun()
+                                        else: st.error(msg)
+
+                        with c2:
+                            with st.popover("💬 Chamar no WhatsApp"):
+                                st.caption(f"Contato Direto: {r['patient_phone']}")
+                                custom_msg = st.text_area("Digite a mensagem para enviar:", key=f"wpp_msg_{r['id']}")
+                                if custom_msg.strip():
+                                    link_wpp = f"https://api.whatsapp.com/send?phone={r['patient_phone']}&text={urllib.parse.quote(custom_msg.strip())}"
+                                    st.markdown(f'<a href="{link_wpp}" target="_blank" style="display:inline-block; background-color:#25D366; color:white; padding:8px 12px; border-radius:5px; text-decoration:none; font-weight:bold; margin-top:10px;">🚀 Abrir WhatsApp Web com Texto</a>', unsafe_allow_html=True)
+
+                        with c3:
+                            if ROLE_ATUAL in ["NURSE", "ADMIN"]:
+                                with st.popover("🩺 Escalonar Médico"):
+                                    obs_medico = st.text_area("Observação curta da triagem:", key=f"obs_doc_{r['id']}")
+                                    if st.button("Gerar Link Seguro e Escalonar", key=f"esc_{r['id']}", type="primary"):
+                                        doc_tk = DatabaseService.escalate_to_doctor(CLINICA_ATUAL_ID, r['report_uuid'], OPERADOR_ID, OPERADOR_ATUAL, ROLE_ATUAL)
+                                        if doc_tk:
+                                            full_doc_url = f"{PUBLIC_BASE_URL}/?view=doctor&token={doc_tk}"
+                                            st.success("Link gerado! Clique abaixo para enviar:")
+
+                                            msg_final = f"🚨 *Solicitação de Avaliação Médica - VitaVoz*\n\n*Paciente:* {safe_patient_name}\n*Observação:* {obs_medico.strip()}\n\nAcesse o prontuário: {full_doc_url}"
+                                            msg_encoded = urllib.parse.quote(msg_final)
+                                            wpp_link = f"https://api.whatsapp.com/send?text={msg_encoded}"
+
+                                            st.markdown(f'<a href="{wpp_link}" target="_blank" style="display:inline-block; background-color:#25D366; color:white; padding:8px 12px; border-radius:5px; text-decoration:none; font-weight:bold; margin-top:10px;">📲 Enviar para o Médico no WhatsApp</a>', unsafe_allow_html=True)
+                                        else:
+                                            st.error("Erro no escalonamento.")
+
+                    elif r['status'] == STATUS_ESCALATED:
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            if ROLE_ATUAL in ["NURSE", "ADMIN"]:
+                                with st.popover("🔄 Gerar Novo Link Médico"):
+                                    st.caption("Caso tenha perdido o link, gere um novo (o anterior será invalidado).")
+                                    obs_medico = st.text_area("Observação da triagem:", key=f"obs_doc_re_{r['id']}")
+                                    if st.button("Gerar Novo Link Seguro", key=f"esc_re_{r['id']}", type="primary"):
+                                        doc_tk = DatabaseService.escalate_to_doctor(CLINICA_ATUAL_ID, r['report_uuid'], OPERADOR_ID, OPERADOR_ATUAL, ROLE_ATUAL)
+                                        if doc_tk:
+                                            full_doc_url = f"{PUBLIC_BASE_URL}/?view=doctor&token={doc_tk}"
+                                            st.success("Novo link gerado! Clique abaixo para enviar:")
+                                            msg_final = f"🚨 *Solicitação de Avaliação Médica - VitaVoz*\n\n*Paciente:* {safe_patient_name}\n*Observação:* {obs_medico.strip()}\n\nAcesse o prontuário: {full_doc_url}"
+                                            msg_encoded = urllib.parse.quote(msg_final)
+                                            wpp_link = f"https://api.whatsapp.com/send?text={msg_encoded}"
+                                            st.markdown(f'<a href="{wpp_link}" target="_blank" style="display:inline-block; background-color:#25D366; color:white; padding:8px 12px; border-radius:5px; text-decoration:none; font-weight:bold; margin-top:10px;">📲 Enviar para o Médico no WhatsApp</a>', unsafe_allow_html=True)
+                                        else:
+                                            st.error("Erro ao regerar link.")
+                        with c2:
+                            with st.popover("Encerrar Workflow"):
+                                st.caption("Use caso o médico tenha respondido por fora do sistema.")
+                                acao = st.selectbox("Ação", ["Médico respondeu via telefone/WhatsApp", "Cancelado / Erro de Escalonamento"])
+                                if st.button("Confirmar Encerramento", key=f"res_esc_{r['id']}", type="primary"):
+                                    ok, msg = DatabaseService.transition_internal_report(CLINICA_ATUAL_ID, r['report_uuid'], STATUS_RESOLVED, OPERADOR_ID, ROLE_ATUAL, OPERADOR_ATUAL, f"Workflow Encerrado: [{acao}]", conduct=acao, resolution_source="TEAM")
+                                    if ok: st.rerun()
+                                    else: st.error(msg)
+
+                    elif r['status'] == STATUS_PENDING_NURSE:
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            if st.button("Confirmar Execução de Ordem", key=f"resn_{r['id']}", type="primary"):
+                                ok, msg = DatabaseService.transition_internal_report(CLINICA_ATUAL_ID, r['report_uuid'], STATUS_RESOLVED, OPERADOR_ID, ROLE_ATUAL, OPERADOR_ATUAL, "Equipe executou instrução médica e encerrou workflow.", resolution_source="TEAM_VIA_DOCTOR")
+                                if ok: st.rerun()
+                                else: st.error(msg)
+                        with c2:
+                            with st.popover("💬 Repassar Ordem no WhatsApp"):
+                                st.caption(f"Contato Direto: {r['patient_phone']}")
+                                custom_msg = st.text_area("Digite a mensagem (ex: receita médica):", key=f"wpp_doc_msg_{r['id']}")
+                                if custom_msg.strip():
+                                    link_wpp = f"https://api.whatsapp.com/send?phone={r['patient_phone']}&text={urllib.parse.quote(custom_msg.strip())}"
+                                    st.markdown(f'<a href="{link_wpp}" target="_blank" style="display:inline-block; background-color:#25D366; color:white; padding:8px 12px; border-radius:5px; text-decoration:none; font-weight:bold; margin-top:10px;">🚀 Abrir WhatsApp Web com Texto</a>', unsafe_allow_html=True)
+
+            st.markdown("</div>", unsafe_allow_html=True)
+
+elif menu == "🗂️ Histórico de Pacientes":
+    require_role("NURSE", "ASSISTANT", "ADMIN")
+    st.markdown("## 🗂️ Rastreabilidade Clínica")
+
+    col1, col2 = st.columns([3, 1])
     with col1:
-        st.markdown(f"<div class='stat-card'><div class='stat-value'>{pacientes_monitorados}</div><div class='stat-label'>Pacientes Monitorados</div></div>", unsafe_allow_html=True)
+        st.caption("Visão de registro operacional do acompanhamento e auditoria de eventos.")
     with col2:
-        st.markdown(f"<div class='stat-card'><div class='stat-value' style='color: #EF4444;'>{pacientes_risco}</div><div class='stat-label'>Pacientes em Risco (Hoje)</div></div>", unsafe_allow_html=True)
-    with col3:
-        st.markdown(f"<div class='stat-card'><div class='stat-value'>{alertas_resolvidos}</div><div class='stat-label'>Alertas Resolvidos (Mês)</div></div>", unsafe_allow_html=True)
+        if st.button("🛡️ Verificar Hash Chain"):
+            valido, msg = DatabaseService.verify_hash_chain(CLINICA_ATUAL_ID)
+            if valido: st.success(msg)
+            else: st.error(msg)
 
-    col4, col5, col6 = st.columns(3)
-    with col4:
-        st.markdown(f"<div class='stat-card'><div class='stat-value'>{roi.sla_medio_atendimento_minutos:.1f} min</div><div class='stat-label'>Tempo Médio de Resposta (SLA)</div></div>", unsafe_allow_html=True)
-    with col5:
-        st.markdown(f"<div class='stat-card'><div class='stat-value'>{roi.readmissoes_prevenidas}</div><div class='stat-label'>Readmissões Prevenidas</div></div>", unsafe_allow_html=True)
-    with col6:
-        st.markdown(f"<div class='stat-card'><div class='stat-value' style='color: #10B981;'>R$ {roi.economia_financeira_reais:,.2f}</div><div class='stat-label'>Economia Gerada / Receita Protegida</div></div>", unsafe_allow_html=True)
+    with get_db() as conn:
+        patients = conn.cursor().execute("SELECT id, name, procedure_date, phone, allergies, revoked_at FROM patients WHERE clinic_id = ? AND active = 1 ORDER BY id DESC", (CLINICA_ATUAL_ID,)).fetchall()
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.info("💡 **Inteligência de Negócio:** O VitaVoz filtrou 92% dos relatos normais, reduzindo o tempo de triagem manual e protegendo a clínica contra glosas e complicações cirúrgicas graves.")
+    if not patients:
+        st.info("Nenhum paciente cadastrado.")
+        st.stop()
 
-# --- CAMADA 3: AI CLINICAL INBOX (MÉDICO) ---
-elif menu_selecionado == "👨‍⚕️ 3. AI Clinical Inbox (Visão Médico)":
-    if "prontuario_aberto_id" in st.session_state and st.session_state["prontuario_aberto_id"] is not None:
-        render_prontuario_view(st.session_state["prontuario_aberto_id"])
+    patient_opts = {p['id']: f"{p['name']} ({format_iso_to_br_date(p['procedure_date'])})" for p in patients}
+    sel_pid = st.selectbox("Selecione o Paciente para visualizar o histórico:", options=list(patient_opts.keys()), format_func=lambda x: patient_opts[x])
+
+    if sel_pid:
+        p = [p for p in patients if p['id'] == sel_pid][0]
+
+        if ROLE_ATUAL in ["NURSE", "ADMIN"]:
+            st.caption(f"📞 Contato: {p['phone']} | Alergias: {p['allergies']}")
+            if not p['revoked_at']:
+                if st.button("Revogar Acesso", key=f"rev_{p['id']}"):
+                    with get_db() as conn:
+                        conn.cursor().execute("UPDATE patients SET active = 0, revoked_at = ? WHERE id = ? AND clinic_id = ? AND active = 1", (utc_now().isoformat(), p['id'], CLINICA_ATUAL_ID))
+                        conn.commit()
+                    DatabaseService.log_audit(CLINICA_ATUAL_ID, "NONE", p['id'], ACTOR_INTERNAL, OPERADOR_ATUAL, OPERADOR_ID, "PATIENT_ACCESS_REVOKED", "NONE", "NONE", "Acesso do paciente revogado e conta desativada.")
+                    st.rerun()
+        else:
+            st.caption("🔒 Dados operacionais sensíveis de contato e alergias restritos aos perfis de liderança (NURSE/ADMIN).")
+
+        st.markdown("##### Auditoria de Eventos (Append-Only com Elo de Hash Chain SHA-256)")
+        with get_db() as conn:
+            audits = conn.cursor().execute("SELECT * FROM audit_events WHERE patient_id = ? AND clinic_id = ? ORDER BY timestamp ASC", (p['id'], CLINICA_ATUAL_ID)).fetchall()
+        for aud in audits:
+            st.write(f"`{format_local_time(aud['timestamp'])}` — **{aud['action']}** ({aud['actor_name']}): {aud['details']}")
+
+elif menu == "🔗 Cadastrar Paciente":
+    require_role("NURSE", "ADMIN")
+    st.markdown("## Novo Protocolo de Acompanhamento")
+
+    with get_db() as conn:
+        c_info = conn.cursor().execute("SELECT protocol_duration_days FROM clinics WHERE id = ?", (CLINICA_ATUAL_ID,)).fetchone()
+    dias_protocolo = c_info['protocol_duration_days'] if c_info else 15
+
+    with st.form("form_pac"):
+        n = st.text_input("Identificação do Paciente")
+        tel = st.text_input("Contato Telefônico (WhatsApp com DDD)")
+        proc = st.text_input("Procedimento Realizado")
+        d_proc = st.date_input("Data da Cirurgia")
+        alergias = st.text_input("Alergias Sistêmicas (Opcional)")
+
+        if st.form_submit_button("Gerar Acesso"):
+            tel_normalized = normalize_phone(tel)
+            if n and tel_normalized and proc and d_proc:
+                raw_token = generate_secure_token()
+                proc_iso_date = d_proc.strftime("%Y-%m-%d")
+                proc_date_obj = datetime.strptime(proc_iso_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                exp = (proc_date_obj + timedelta(days=dias_protocolo)).isoformat()
+
+                with get_db() as conn:
+                    c = conn.cursor()
+                    c.execute("BEGIN IMMEDIATE")
+                    c.execute("UPDATE patients SET active = 0, revoked_at = ? WHERE phone = ? AND clinic_id = ? AND revoked_at IS NULL", (utc_now().isoformat(), tel_normalized, CLINICA_ATUAL_ID))
+                    c.execute("INSERT INTO patients (clinic_id, name, phone, procedure_name, procedure_date, allergies, token_hash, token_expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (CLINICA_ATUAL_ID, n, tel_normalized, proc, proc_iso_date, alergias, hash_token(raw_token), exp, utc_now().isoformat()))
+                    new_pid = c.lastrowid
+                    conn.commit()
+                DatabaseService.log_audit(CLINICA_ATUAL_ID, "NONE", new_pid, ACTOR_INTERNAL, OPERADOR_ATUAL, OPERADOR_ID, "PATIENT_CREATED", "NONE", "NONE", "Acesso gerado.")
+
+                patient_link = f"{PUBLIC_BASE_URL}/?view=portal&token={raw_token}"
+                st.success(f"Link de acompanhamento ativo por {dias_protocolo} dias:\n`{patient_link}`")
+
+                msg_patient_enc = urllib.parse.quote(f"Olá {n}, aqui está o seu link seguro de acompanhamento pós-operatório (VitaVoz): {patient_link}")
+                wpp_patient = f"https://api.whatsapp.com/send?phone={tel_normalized}&text={msg_patient_enc}"
+                st.markdown(f'<a href="{wpp_patient}" target="_blank" style="display:inline-block; background-color:#25D366; color:white; padding:8px 12px; border-radius:5px; text-decoration:none; font-weight:bold;">💬 Enviar Link ao Paciente via WhatsApp</a>', unsafe_allow_html=True)
+            else: st.error("Todos os campos básicos são obrigatórios.")
+
+elif menu == "👥 Usuários e Acessos":
+    require_role("ADMIN")
+    st.markdown("## 👥 Gestão de Usuários da Clínica")
+    st.caption("Módulo exclusivo para Administradores configurarem a equipe operacional.")
+
+    with st.expander("➕ Cadastrar Novo Profissional"):
+        with st.form("new_user_form"):
+            new_name = st.text_input("Nome do Profissional")
+            new_username = st.text_input("Usuário (Login)")
+            new_pwd = st.text_input("Senha Inicial (Mín. 12 caracteres)", type="password")
+            new_role = st.selectbox("Papel no Sistema", ["NURSE", "ASSISTANT"])
+            if st.form_submit_button("Criar Acesso", type="primary"):
+                if len(new_pwd) < 12: st.error("A senha deve ter no mínimo 12 caracteres.")
+                elif not new_name or not new_username: st.error("Nome e Usuário são obrigatórios.")
+                else:
+                    norm_user = new_username.strip().lower()
+                    try:
+                        with get_db() as conn:
+                            c = conn.cursor()
+                            c.execute("INSERT INTO users (clinic_id, name, username, password_hash, role) VALUES (?, ?, ?, ?, ?)", (CLINICA_ATUAL_ID, new_name, norm_user, hash_password(new_pwd), new_role))
+                            conn.commit()
+                        DatabaseService.log_audit(CLINICA_ATUAL_ID, "NONE", None, ACTOR_INTERNAL, OPERADOR_ATUAL, OPERADOR_ID, "USER_CREATED", "NONE", "NONE", f"Novo usuário criado: {norm_user} ({new_role})")
+                        st.success(f"Usuário {norm_user} criado com sucesso.")
+                        st.rerun()
+                    except sqlite3.IntegrityError:
+                        st.error("Este nome de usuário já está em uso.")
+
+    st.markdown("##### Equipe Cadastrada")
+    with get_db() as conn:
+        users_list = conn.cursor().execute("SELECT id, name, username, role, active FROM users WHERE clinic_id = ?", (CLINICA_ATUAL_ID,)).fetchall()
+
+    for u in users_list:
+        c1, c2, c3 = st.columns([3, 1, 1])
+        c1.write(f"• **{u['name']}** (`{u['username']}`) — Papel: **{u['role']}**")
+        c2.write("🟢 Ativo" if u['active'] == 1 else "🔴 Inativo")
+        if u['id'] != OPERADOR_ID:
+            btn_label = "Desativar" if u['active'] == 1 else "Reativar"
+            new_active_val = 0 if u['active'] == 1 else 1
+            if c3.button(btn_label, key=f"tog_u_{u['id']}"):
+                with get_db() as conn:
+                    conn.cursor().execute("UPDATE users SET active = ? WHERE id = ? AND clinic_id = ?", (new_active_val, u['id'], CLINICA_ATUAL_ID))
+                    conn.commit()
+                act_str = "USER_DEACTIVATED" if new_active_val == 0 else "USER_REACTIVATED"
+                DatabaseService.log_audit(CLINICA_ATUAL_ID, "NONE", None, ACTOR_INTERNAL, OPERADOR_ATUAL, OPERADOR_ID, act_str, "NONE", "NONE", f"Usuário {u['username']} (ID #{u['id']}) foi {'desativado' if new_active_val == 0 else 'reativado'}.")
+                st.rerun()
+
+elif menu == "🩺 Health Check Operacional":
+    require_role("ADMIN")
+    st.markdown("## 🩺 Observabilidade & Health Check")
+    st.caption("Verificação em tempo real da infraestrutura técnica e métricas da clínica.")
+
+    h_status = HealthService.get_status(CLINICA_ATUAL_ID)
+
+    if h_status.get("healthy"):
+        st.success("🟢 Infraestrutura Íntegra (HEALTHY)")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Conexão Banco", h_status["db_connection"])
+        c2.metric("Modo do Banco", h_status["journal_mode"])
+        c3.metric("Versão do Schema", h_status["schema_version"])
+
+        c4, c5 = st.columns(2)
+        c4.metric("Último Backup Criptografado", h_status["last_backup"])
+        c5.metric("SLAs de Triagem Violados", h_status["breached_slas"])
     else:
-        st.markdown("### 📥 AI Clinical Inbox")
-        st.markdown("Gestão de exceções: Triagem preditiva das quebras de padrão.")
+        st.error(f"🔴 Erro de Serviço: {h_status.get('error')}")
 
-        fila_dtos = get_fila_segura()
-        p1_items = [d for d in fila_dtos if d.score < 60]
-        p2_items = [d for d in fila_dtos if 60 <= d.score < 85]
-        p3_items = [d for d in fila_dtos if d.score >= 85]
+elif menu == "⚙️ Segurança da Conta":
+    st.markdown("## Conformidade e Backup da Conta")
 
-        tab1, tab2, tab3 = st.tabs([f"🔴 P1 Crítico ({len(p1_items)})", f"🟡 P2 Atenção ({len(p2_items)})", f"🟢 P3 Estável ({len(p3_items)})"])
+    if ROLE_ATUAL == "ADMIN":
+        st.markdown("##### 📦 Backup Operacional Criptografado (Scrypt / AES-256-GCM)")
+        st.info("ℹ️ **Aviso do Piloto:** A restauração de banco de dados via interface foi desativada por segurança técnica. Os backups (.enc) criptografados com AES-256-GCM podem ser gerados e baixados livremente abaixo.")
 
-        def render_inbox_card(idx, dto, priority_class):
-            st.markdown(f"""
-            <div class='inbox-card {priority_class}'>
-                <b>{dto.paciente}</b> — VitaScore™: {dto.score}<br>
-                <small>{dto.procedimento} ({dto.pos_op})</small><br>
-                <div style='margin-top:5px; color:#334155;'><b>IA:</b> {dto.motivo}</div>
-            </div>
-            """, unsafe_allow_html=True)
+        if st.button("Gerar Cópia Criptografada do Banco (.enc)", type="primary"):
+            try:
+                encrypted_data = BackupService.generate_backup_encrypted(BACKUP_ENCRYPTION_KEY)
+                backup_filename = f"backup_vitavoz_{CLINICA_ATUAL_ID}_{int(time.time())}.enc"
+                st.download_button("📥 Baixar Arquivo .enc Protegido (AES-256)", encrypted_data, file_name=backup_filename, mime="application/octet-stream")
+                DatabaseService.log_audit(CLINICA_ATUAL_ID, "NONE", None, ACTOR_INTERNAL, OPERADOR_ATUAL, OPERADOR_ID, "DATABASE_BACKUP", "NONE", "NONE", f"Backup gerado: {backup_filename}")
+            except Exception as e:
+                st.error(f"Erro ao gerar backup: {str(e)}")
+        st.divider()
 
-            if st.button("Abrir Prontuário Clínico", key=f"btn_inbox_{idx}_{priority_class}_{dto.paciente}"):
-                st.session_state["prontuario_aberto_id"] = dto.id
-                st.rerun()
-
-        with tab1:
-            for idx, dto in enumerate(p1_items): render_inbox_card(idx, dto, "p1")
-        with tab2:
-            for idx, dto in enumerate(p2_items): render_inbox_card(idx, dto, "p2")
-        with tab3:
-            for idx, dto in enumerate(p3_items[:5]): render_inbox_card(idx, dto, "p3")
-
-# --- CAMADA 4: PORTAL DO PACIENTE (COM GRAVADOR REAL) ---
-elif menu_selecionado == "📱 4. Portal do Paciente (WhatsApp)":
-    joao_id = patient_repo.get_joao_id()
-    paciente = patient_service.get_patient_by_id(joao_id)
-    evolucoes_joao = evolution_repo.get_evolutions_by_patient(joao_id)
-    ultima_ev_joao = evolucoes_joao[0] if evolucoes_joao else None
-
-    st.markdown("### 📱 Portal de Acompanhamento do Paciente")
-    st.markdown(f"Paciente: **{paciente.nome}** | **{paciente.procedimento} (D+3)**")
-
-    if ultima_ev_joao and ultima_ev_joao.conduta_medico:
-        st.success(f"👨‍⚕️ **Orientação do Médico (WhatsApp):** {ultima_ev_joao.conduta_medico}")
-
-    with st.container(border=True):
-        st.markdown("#### 🎙️ Gravar/Enviar Mensagem de Voz ao Cirurgião")
-        st.caption("Clique no microfone para gravar seu relato de voz real:")
-
-        # GRAVADOR DE ÁUDIO NATIVO (Requer Streamlit 1.38+)
-        audio_gravado = st.audio_input("🎙️ Gravar Relato de Voz")
-
-        dor_slider = st.select_slider("Selecione o nível de dor sentido agora (0 a 10):", options=[0,1,2,3,4,5,6,7,8,9,10], value=6)
-
-        if audio_gravado is not None:
-            st.audio(audio_gravado)
-            if st.button("🚀 Enviar Áudio para Triagem da IA", type="primary", use_container_width=True):
-                with st.status("🧠 Transcrevendo áudio via Whisper & calculando VitaScore™...", expanded=True) as status:
-                    time.sleep(1.2)
-                    evolution_service.process_voice_report(
-                        patient_id=paciente.id, protocol_id=paciente.protocol_id, dia=3,
-                        nivel_dor=dor_slider, relato_texto=f"Relato de voz gravado via portal. Dor nível {dor_slider}/10 e queixa de desconforto/edema no D+3."
-                    )
-                    status.update(label="Áudio processado e enquadrado na Fila P1 (Crítico)!", state="complete", expanded=False)
-                st.success("✅ Relato enviado com sucesso! O médico receberá o alerta em segundos.")
-                time.sleep(1)
-                st.rerun()
-
-    with st.expander("💬 Ou envie mensagem direta por texto"):
-        msg_texto = st.text_input("Sua mensagem:", value="Doutor, minha dor subiu para 5 e sinto a região muito inchada.")
-        if st.button("Enviar Texto"):
-            evolution_service.process_voice_report(
-                patient_id=paciente.id, protocol_id=paciente.protocol_id, dia=3,
-                nivel_dor=5, relato_texto=msg_texto
-            )
-            st.success("Texto processado! Verifique a Fila da Navegadora.")
-            st.rerun()
+    with st.form("pwd_form"):
+        senha_atual = st.text_input("Senha Atual", type="password")
+        nova_senha = st.text_input("Nova Senha (Mín. 12 caracteres)", type="password")
+        if st.form_submit_button("Alterar Senha", type="primary"):
+            if len(nova_senha) < 12: st.error("Mínimo de 12 caracteres exigidos.")
+            else:
+                with get_db() as conn:
+                    user = conn.cursor().execute("SELECT password_hash FROM users WHERE id = ?", (OPERADOR_ID,)).fetchone()
+                    if verify_password(senha_atual, user['password_hash']):
+                        conn.cursor().execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(nova_senha), OPERADOR_ID))
+                        conn.commit()
+                        DatabaseService.log_audit(CLINICA_ATUAL_ID, "NONE", None, ACTOR_INTERNAL, OPERADOR_ATUAL, OPERADOR_ID, "PASSWORD_CHANGED", "NONE", "NONE", "Senha atualizada.")
+                        st.success("Senha alterada com segurança.")
+                    else: st.error("Senha de verificação incorreta.")
