@@ -66,10 +66,11 @@ ACTOR_DOCTOR = "DOCTOR"
 ACTOR_INTERNAL = "INTERNAL_USER"
 ACTOR_SYSTEM = "SYSTEM"
 
+# Corrigido validação para Escalonamento Múltiplo
 VALID_TRANSITIONS = {
     STATUS_RECEIVED: [STATUS_ACKNOWLEDGED],
     STATUS_ACKNOWLEDGED: [STATUS_ESCALATED, STATUS_RESOLVED],
-    STATUS_ESCALATED: [STATUS_RESOLVED, STATUS_PENDING_NURSE],
+    STATUS_ESCALATED: [STATUS_ESCALATED, STATUS_RESOLVED, STATUS_PENDING_NURSE], # <-- Correção 1
     STATUS_PENDING_NURSE: [STATUS_RESOLVED],
     STATUS_RESOLVED: []
 }
@@ -78,8 +79,9 @@ ROLE_PERMISSIONS = {
     f"{STATUS_RECEIVED}->{STATUS_ACKNOWLEDGED}": ["NURSE", "ASSISTANT", "ADMIN"],
     f"{STATUS_ACKNOWLEDGED}->{STATUS_ESCALATED}": ["NURSE", "ADMIN"],
     f"{STATUS_ACKNOWLEDGED}->{STATUS_RESOLVED}": ["NURSE", "ASSISTANT", "ADMIN"],
+    f"{STATUS_ESCALATED}->{STATUS_ESCALATED}": ["NURSE", "ADMIN"],               # <-- Correção 1
     f"{STATUS_ESCALATED}->{STATUS_PENDING_NURSE}": ["DOCTOR"],
-    f"{STATUS_ESCALATED}->{STATUS_RESOLVED}": ["DOCTOR", "NURSE", "ADMIN"],
+    f"{STATUS_ESCALATED}->{STATUS_RESOLVED}": ["DOCTOR"],
     f"{STATUS_PENDING_NURSE}->{STATUS_RESOLVED}": ["NURSE", "ASSISTANT", "ADMIN"]
 }
 
@@ -151,6 +153,7 @@ class AudioTranscriptionService:
             raise ConnectionError(f"Erro na API de transcrição: {e}")
         except Exception as e:
             raise RuntimeError(f"Falha técnica ao processar áudio: {e}")
+
 
 class BackupService:
     MAGIC = b"VTVZ"
@@ -273,7 +276,7 @@ class DatabaseService:
         sla_alvo = SLA_BY_PRIORITY[oper_priority]
         report_uuid = str(uuid.uuid4())
 
-        # Salva fisicamente o áudio no servidor caso tenha sido enviado
+        # Salva fisicamente o áudio no servidor caso tenha sido enviado (CORREÇÃO HANDOFF APLICADA)
         if audio_bytes:
             with open(f"patient_audios/{report_uuid}.wav", "wb") as f:
                 f.write(audio_bytes)
@@ -402,7 +405,11 @@ class DatabaseService:
 
     @staticmethod
     def escalate_to_doctor(clinic_id, report_uuid, actor_user_id, actor_name, actor_role):
-        if actor_role not in ["NURSE", "ADMIN"]: return None
+        # PERMISSÃO CORRIGIDA PARA MÚLTIPLOS ESCALONAMENTOS
+        has_perm = actor_role in ROLE_PERMISSIONS.get(f"{STATUS_ACKNOWLEDGED}->{STATUS_ESCALATED}", []) or \
+                   actor_role in ROLE_PERMISSIONS.get(f"{STATUS_ESCALATED}->{STATUS_ESCALATED}", [])
+        if not has_perm: return None
+        
         doc_token = generate_secure_token()
         exp = (utc_now() + timedelta(minutes=30)).isoformat()
 
@@ -410,19 +417,22 @@ class DatabaseService:
             c = conn.cursor()
             c.execute("BEGIN IMMEDIATE")
 
-            # Permite escalonar quem já está em ESCALATED para gerar um novo link
+            # ESTADO CORRIGIDO PARA MÚLTIPLOS ESCALONAMENTOS
             rep_data = c.execute("SELECT patient_id, status FROM reports WHERE report_uuid = ? AND clinic_id = ? AND status IN (?, ?)", (report_uuid, clinic_id, STATUS_ACKNOWLEDGED, STATUS_ESCALATED)).fetchone()
             if not rep_data:
                 conn.rollback(); return None
 
             patient_id = rep_data['patient_id']
-            curr_status = rep_data['status']
+            old_status = rep_data['status']
+
             c.execute("""UPDATE reports SET status = ?, escalated_at = ?, doctor_token_hash = ?, doctor_link_expires_at = ? 
                          WHERE report_uuid = ? AND status = ? AND clinic_id = ?""",
-                      (STATUS_ESCALATED, utc_now().isoformat(), hash_token(doc_token), exp, report_uuid, curr_status, clinic_id))
+                      (STATUS_ESCALATED, utc_now().isoformat(), hash_token(doc_token), exp, report_uuid, old_status, clinic_id))
+            
             if c.rowcount != 1:
                 conn.rollback(); return None
-            DatabaseService.log_audit(clinic_id, report_uuid, patient_id, ACTOR_INTERNAL, actor_name, actor_user_id, "REPORT_ESCALATED", curr_status, STATUS_ESCALATED, "Link médico gerado/atualizado.", conn_override=c)
+                
+            DatabaseService.log_audit(clinic_id, report_uuid, patient_id, ACTOR_INTERNAL, actor_name, actor_user_id, "REPORT_ESCALATED", old_status, STATUS_ESCALATED, "Escalonado para avaliação médica.", conn_override=c)
             conn.commit()
         return doc_token
 
@@ -715,23 +725,9 @@ if "patient_session" in st.session_state:
             <br><br>
         """, unsafe_allow_html=True)
 
-    # NOVO: Escala Visual Analógica de Dor (Padrão OMS)
-    escala_oms = [
-        "0 - Sem Dor 😀", "1", "2 - Leve 🙂", "3", "4 - Moderada 😐",
-        "5", "6 - Forte 🙁", "7", "8 - Muito Forte 😫", "9", "10 - Insuportável 😭"
-    ]
-    dor_selecionada = st.select_slider("Nível de dor (Escala Visual Analógica):", options=escala_oms, value="0 - Sem Dor 😀")
-    dor_val = int(dor_selecionada.split(" ")[0])
-
+    dor_val = int(st.select_slider("Nível de dor local ou difusa (0 a 10):", options=[str(i) for i in range(11)], value="0"))
     tendencia = st.radio("Comparando com as últimas 24h:", ["🟢 Melhorou", "⚪ Igual", "🔴 Piorou"], horizontal=True, label_visibility="collapsed", index=1)
-
-    # NOVO: Multiselect com o Placeholder em Português
-    sintomas = st.multiselect(
-        "Sintomas Ocultos",
-        ["Sangramento", "Inchaço", "Febre", "Dormência", "Outro"],
-        placeholder="Você está passando por algum desses?",
-        label_visibility="collapsed"
-    )
+    sintomas = st.multiselect("Sintomas Adicionais Observados:", ["Sangramento", "Inchaço", "Febre", "Dormência", "Outro"], label_visibility="collapsed")
 
     st.divider()
 
@@ -741,20 +737,19 @@ if "patient_session" in st.session_state:
     # --------------------------------------------------------------------------
     # FEATURE 1: TRANSCRIÇÃO GRATUITA DE ÁUDIO VIA SPEECH_RECOGNITION
     # --------------------------------------------------------------------------
-    transcription_key = f"texto_transcrito_{st.session_state.form_submission_uuid}"
-
-    if transcription_key not in st.session_state:
-        st.session_state[transcription_key] = ""
+    if "texto_transcrito" not in st.session_state:
+        st.session_state["texto_transcrito"] = ""
 
     if audio_val:
         audio_bytes = audio_val.getvalue()
         current_audio_hash = hashlib.md5(audio_bytes).hexdigest()
 
+        # Só transcreve se o áudio mudou (para não transcrever em loops do Streamlit)
         if st.session_state.get("last_audio_hash") != current_audio_hash:
             with st.spinner("🧠 Transcrevendo áudio..."):
                 try:
                     texto_resultado = AudioTranscriptionService.transcribe(audio_bytes)
-                    st.session_state[transcription_key] = texto_resultado
+                    st.session_state["texto_transcrito"] = texto_resultado
                     st.session_state["last_audio_hash"] = current_audio_hash
                     st.rerun()
                 except ValueError:
@@ -765,8 +760,8 @@ if "patient_session" in st.session_state:
                     st.session_state["last_audio_hash"] = current_audio_hash
 
     texto_final = st.text_area(
-        "Verifique e edite o texto antes de enviar (Ou digite manualmente):",
-        key=transcription_key
+        "Verifique e edite o texto antes de enviar (Ou digite manualmente):", 
+        key="texto_transcrito"
     )
 
     is_emergency = st.checkbox("🚨 Considero que preciso de atendimento médico imediato.")
@@ -782,6 +777,8 @@ if "patient_session" in st.session_state:
             st.error(f"Limite excedido. Sintetize em menos de {MAX_REPORT_CHARS} caracteres."); st.stop()
 
         submission_id = st.session_state.get("form_submission_uuid", str(uuid.uuid4()))
+        
+        # Correção Handoff 2: Captura os bytes brutos do áudio para evitar salvar arquivo vazio
         raw_audio_data = audio_val.getvalue() if audio_val else None
 
         ok_spam, msg_spam = DatabaseService.submit_patient_report(
@@ -792,6 +789,8 @@ if "patient_session" in st.session_state:
             st.error(msg_spam); st.stop()
 
         st.session_state.form_submission_uuid = str(uuid.uuid4())
+        # Reseta o estado da transcrição pós submissão
+        st.session_state["texto_transcrito"] = ""
         st.session_state["last_audio_hash"] = ""
 
         if is_emergency:
@@ -988,7 +987,7 @@ elif menu == "📥 Fila Operacional":
             elif r['status'] != STATUS_ESCALATED:
                 st.markdown(f"Escala Numérica de Dor: {r['pain']}/10 | Declaração de Evolução: {html.escape(r['trend'])}")
                 if r['transcript_original']: st.caption(f"\"{html.escape(r['transcript_original'])}\"")
-
+                
                 audio_path = f"patient_audios/{r['report_uuid']}.wav"
                 if os.path.exists(audio_path):
                     st.audio(audio_path)
@@ -999,7 +998,7 @@ elif menu == "📥 Fila Operacional":
                     if ok: st.rerun()
                     else: st.error(msg)
 
-            elif r['status'] in [STATUS_ACKNOWLEDGED, STATUS_ESCALATED, STATUS_PENDING_NURSE]:
+            elif r['status'] in [STATUS_ACKNOWLEDGED, STATUS_PENDING_NURSE]:
                 if r['assigned_user_id'] != OPERADOR_ID:
                     if ROLE_ATUAL in ["NURSE", "ADMIN"]:
                         with st.popover("🔄 Reatribuir Responsável"):
@@ -1022,15 +1021,17 @@ elif menu == "📥 Fila Operacional":
                                         ok, msg = DatabaseService.transition_internal_report(CLINICA_ATUAL_ID, r['report_uuid'], STATUS_RESOLVED, OPERADOR_ID, ROLE_ATUAL, OPERADOR_ATUAL, f"Workflow Encerrado: [{acao}]", conduct=acao, resolution_source="TEAM")
                                         if ok: st.rerun()
                                         else: st.error(msg)
-
+                        
+                        # CORREÇÃO HANDOFF: MIGRAR PARA WA.ME (Protocolo Rápido Universal)
                         with c2:
                             with st.popover("💬 Chamar no WhatsApp"):
                                 st.caption(f"Contato Direto: {r['patient_phone']}")
                                 custom_msg = st.text_area("Digite a mensagem para enviar:", key=f"wpp_msg_{r['id']}")
                                 if custom_msg.strip():
-                                    link_wpp = f"https://api.whatsapp.com/send?phone={r['patient_phone']}&text={urllib.parse.quote(custom_msg.strip())}"
+                                    link_wpp = f"https://wa.me/{r['patient_phone']}?text={urllib.parse.quote(custom_msg.strip())}"
                                     st.markdown(f'<a href="{link_wpp}" target="_blank" style="display:inline-block; background-color:#25D366; color:white; padding:8px 12px; border-radius:5px; text-decoration:none; font-weight:bold; margin-top:10px;">🚀 Abrir WhatsApp Web com Texto</a>', unsafe_allow_html=True)
-
+                        
+                        # CORREÇÃO HANDOFF: MIGRAR PARA WA.ME (Protocolo Rápido Universal)
                         with c3:
                             if ROLE_ATUAL in ["NURSE", "ADMIN"]:
                                 with st.popover("🩺 Escalonar Médico"):
@@ -1040,41 +1041,14 @@ elif menu == "📥 Fila Operacional":
                                         if doc_tk:
                                             full_doc_url = f"{PUBLIC_BASE_URL}/?view=doctor&token={doc_tk}"
                                             st.success("Link gerado! Clique abaixo para enviar:")
-
+                                            
                                             msg_final = f"🚨 *Solicitação de Avaliação Médica - VitaVoz*\n\n*Paciente:* {safe_patient_name}\n*Observação:* {obs_medico.strip()}\n\nAcesse o prontuário: {full_doc_url}"
                                             msg_encoded = urllib.parse.quote(msg_final)
-                                            wpp_link = f"https://api.whatsapp.com/send?text={msg_encoded}"
-
+                                            wpp_link = f"https://wa.me/?text={msg_encoded}"
+                                            
                                             st.markdown(f'<a href="{wpp_link}" target="_blank" style="display:inline-block; background-color:#25D366; color:white; padding:8px 12px; border-radius:5px; text-decoration:none; font-weight:bold; margin-top:10px;">📲 Enviar para o Médico no WhatsApp</a>', unsafe_allow_html=True)
-                                        else:
+                                        else: 
                                             st.error("Erro no escalonamento.")
-
-                    elif r['status'] == STATUS_ESCALATED:
-                        c1, c2 = st.columns(2)
-                        with c1:
-                            if ROLE_ATUAL in ["NURSE", "ADMIN"]:
-                                with st.popover("🔄 Gerar Novo Link Médico"):
-                                    st.caption("Caso tenha perdido o link, gere um novo (o anterior será invalidado).")
-                                    obs_medico = st.text_area("Observação da triagem:", key=f"obs_doc_re_{r['id']}")
-                                    if st.button("Gerar Novo Link Seguro", key=f"esc_re_{r['id']}", type="primary"):
-                                        doc_tk = DatabaseService.escalate_to_doctor(CLINICA_ATUAL_ID, r['report_uuid'], OPERADOR_ID, OPERADOR_ATUAL, ROLE_ATUAL)
-                                        if doc_tk:
-                                            full_doc_url = f"{PUBLIC_BASE_URL}/?view=doctor&token={doc_tk}"
-                                            st.success("Novo link gerado! Clique abaixo para enviar:")
-                                            msg_final = f"🚨 *Solicitação de Avaliação Médica - VitaVoz*\n\n*Paciente:* {safe_patient_name}\n*Observação:* {obs_medico.strip()}\n\nAcesse o prontuário: {full_doc_url}"
-                                            msg_encoded = urllib.parse.quote(msg_final)
-                                            wpp_link = f"https://api.whatsapp.com/send?text={msg_encoded}"
-                                            st.markdown(f'<a href="{wpp_link}" target="_blank" style="display:inline-block; background-color:#25D366; color:white; padding:8px 12px; border-radius:5px; text-decoration:none; font-weight:bold; margin-top:10px;">📲 Enviar para o Médico no WhatsApp</a>', unsafe_allow_html=True)
-                                        else:
-                                            st.error("Erro ao regerar link.")
-                        with c2:
-                            with st.popover("Encerrar Workflow"):
-                                st.caption("Use caso o médico tenha respondido por fora do sistema.")
-                                acao = st.selectbox("Ação", ["Médico respondeu via telefone/WhatsApp", "Cancelado / Erro de Escalonamento"])
-                                if st.button("Confirmar Encerramento", key=f"res_esc_{r['id']}", type="primary"):
-                                    ok, msg = DatabaseService.transition_internal_report(CLINICA_ATUAL_ID, r['report_uuid'], STATUS_RESOLVED, OPERADOR_ID, ROLE_ATUAL, OPERADOR_ATUAL, f"Workflow Encerrado: [{acao}]", conduct=acao, resolution_source="TEAM")
-                                    if ok: st.rerun()
-                                    else: st.error(msg)
 
                     elif r['status'] == STATUS_PENDING_NURSE:
                         c1, c2 = st.columns(2)
@@ -1083,12 +1057,14 @@ elif menu == "📥 Fila Operacional":
                                 ok, msg = DatabaseService.transition_internal_report(CLINICA_ATUAL_ID, r['report_uuid'], STATUS_RESOLVED, OPERADOR_ID, ROLE_ATUAL, OPERADOR_ATUAL, "Equipe executou instrução médica e encerrou workflow.", resolution_source="TEAM_VIA_DOCTOR")
                                 if ok: st.rerun()
                                 else: st.error(msg)
+                        
+                        # CORREÇÃO HANDOFF: MIGRAR PARA WA.ME (Protocolo Rápido Universal)
                         with c2:
                             with st.popover("💬 Repassar Ordem no WhatsApp"):
                                 st.caption(f"Contato Direto: {r['patient_phone']}")
                                 custom_msg = st.text_area("Digite a mensagem (ex: receita médica):", key=f"wpp_doc_msg_{r['id']}")
                                 if custom_msg.strip():
-                                    link_wpp = f"https://api.whatsapp.com/send?phone={r['patient_phone']}&text={urllib.parse.quote(custom_msg.strip())}"
+                                    link_wpp = f"https://wa.me/{r['patient_phone']}?text={urllib.parse.quote(custom_msg.strip())}"
                                     st.markdown(f'<a href="{link_wpp}" target="_blank" style="display:inline-block; background-color:#25D366; color:white; padding:8px 12px; border-radius:5px; text-decoration:none; font-weight:bold; margin-top:10px;">🚀 Abrir WhatsApp Web com Texto</a>', unsafe_allow_html=True)
 
             st.markdown("</div>", unsafe_allow_html=True)
@@ -1173,7 +1149,10 @@ elif menu == "🔗 Cadastrar Paciente":
                 st.success(f"Link de acompanhamento ativo por {dias_protocolo} dias:\n`{patient_link}`")
 
                 msg_patient_enc = urllib.parse.quote(f"Olá {n}, aqui está o seu link seguro de acompanhamento pós-operatório (VitaVoz): {patient_link}")
-                wpp_patient = f"https://api.whatsapp.com/send?phone={tel_normalized}&text={msg_patient_enc}"
+                
+                # CORREÇÃO HANDOFF: MIGRAR PARA WA.ME (Protocolo Rápido Universal)
+                wpp_patient = f"https://wa.me/{tel_normalized}?text={msg_patient_enc}"
+                
                 st.markdown(f'<a href="{wpp_patient}" target="_blank" style="display:inline-block; background-color:#25D366; color:white; padding:8px 12px; border-radius:5px; text-decoration:none; font-weight:bold;">💬 Enviar Link ao Paciente via WhatsApp</a>', unsafe_allow_html=True)
             else: st.error("Todos os campos básicos são obrigatórios.")
 
