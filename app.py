@@ -79,7 +79,7 @@ ROLE_PERMISSIONS = {
     f"{STATUS_RECEIVED}->{STATUS_ACKNOWLEDGED}": ["NURSE", "ASSISTANT", "ADMIN"],
     f"{STATUS_ACKNOWLEDGED}->{STATUS_ESCALATED}": ["NURSE", "ADMIN"],
     f"{STATUS_ACKNOWLEDGED}->{STATUS_RESOLVED}": ["NURSE", "ASSISTANT", "ADMIN"],
-    f"{STATUS_ESCALATED}->{STATUS_ESCALATED}": ["NURSE", "ADMIN"],               # <-- Correção 1
+    f"{STATUS_ESCALATED}->{STATUS_ESCALATED}": ["NURSE", "ADMIN"],                # <-- Correção 1
     f"{STATUS_ESCALATED}->{STATUS_PENDING_NURSE}": ["DOCTOR"],
     f"{STATUS_ESCALATED}->{STATUS_RESOLVED}": ["DOCTOR"],
     f"{STATUS_PENDING_NURSE}->{STATUS_RESOLVED}": ["NURSE", "ASSISTANT", "ADMIN"]
@@ -409,7 +409,7 @@ class DatabaseService:
         has_perm = actor_role in ROLE_PERMISSIONS.get(f"{STATUS_ACKNOWLEDGED}->{STATUS_ESCALATED}", []) or \
                    actor_role in ROLE_PERMISSIONS.get(f"{STATUS_ESCALATED}->{STATUS_ESCALATED}", [])
         if not has_perm: return None
-        
+
         doc_token = generate_secure_token()
         exp = (utc_now() + timedelta(minutes=30)).isoformat()
 
@@ -428,10 +428,10 @@ class DatabaseService:
             c.execute("""UPDATE reports SET status = ?, escalated_at = ?, doctor_token_hash = ?, doctor_link_expires_at = ? 
                          WHERE report_uuid = ? AND status = ? AND clinic_id = ?""",
                       (STATUS_ESCALATED, utc_now().isoformat(), hash_token(doc_token), exp, report_uuid, old_status, clinic_id))
-            
+
             if c.rowcount != 1:
                 conn.rollback(); return None
-                
+
             DatabaseService.log_audit(clinic_id, report_uuid, patient_id, ACTOR_INTERNAL, actor_name, actor_user_id, "REPORT_ESCALATED", old_status, STATUS_ESCALATED, "Escalonado para avaliação médica.", conn_override=c)
             conn.commit()
         return doc_token
@@ -760,7 +760,7 @@ if "patient_session" in st.session_state:
                     st.session_state["last_audio_hash"] = current_audio_hash
 
     texto_final = st.text_area(
-        "Verifique e edite o texto antes de enviar (Ou digite manualmente):", 
+        "Verifique e edite o texto antes de enviar (Ou digite manualmente):",
         key="texto_transcrito"
     )
 
@@ -777,7 +777,7 @@ if "patient_session" in st.session_state:
             st.error(f"Limite excedido. Sintetize em menos de {MAX_REPORT_CHARS} caracteres."); st.stop()
 
         submission_id = st.session_state.get("form_submission_uuid", str(uuid.uuid4()))
-        
+
         # Correção Handoff 2: Captura os bytes brutos do áudio para evitar salvar arquivo vazio
         raw_audio_data = audio_val.getvalue() if audio_val else None
 
@@ -847,6 +847,13 @@ st.markdown('<div class="main-header">VitaVoz</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">Plataforma de Gestão Operacional do Acompanhamento Pós-Procedimento</div>', unsafe_allow_html=True)
 
 with st.sidebar:
+    # --- LOGO DA CLÍNICA NA BARRA LATERAL ---
+    if os.path.exists("logo.png"):
+        st.sidebar.image("logo.png", use_container_width=True)
+    else:
+        st.sidebar.markdown("### 🏥 Instituto Dr. Lelis")
+        st.sidebar.markdown("---")
+
     st.markdown(f"👤 **{html.escape(OPERADOR_ATUAL)}** ({ROLE_ATUAL})")
     if st.button("Finalizar Sessão Protegida", type="secondary"):
         st.session_state.clear(); st.rerun()
@@ -923,7 +930,10 @@ if menu == "📊 Dashboard Inteligente":
 elif menu == "📥 Fila Operacional":
     require_role("NURSE", "ASSISTANT", "ADMIN")
     st.markdown("## 📥 Triagem Operacional")
-    if st.button("🔄 Atualizar Processos"): st.rerun()
+    
+    col_title, col_btn = st.columns([4, 1])
+    with col_btn:
+        if st.button("🔄 Atualizar Fila", use_container_width=True): st.rerun()
 
     with get_db() as conn:
         active_users = conn.cursor().execute("SELECT id, name, role FROM users WHERE clinic_id = ? AND active = 1 AND role IN ('NURSE', 'ASSISTANT', 'ADMIN')", (CLINICA_ATUAL_ID,)).fetchall()
@@ -942,7 +952,7 @@ elif menu == "📥 Fila Operacional":
                 END, r.received_at ASC
         """, (CLINICA_ATUAL_ID,)).fetchall()
 
-    if not reports: st.success("Fila limpa e organizada.")
+    if not reports: st.success("🎉 Fila limpa e organizada. Nenhum paciente aguardando no momento.")
 
     for r in reports:
         ref_date = r['received_at']
@@ -958,6 +968,30 @@ elif menu == "📥 Fila Operacional":
         sla_alvo = r['sla_target_minutes'] if r['sla_target_minutes'] else SLA_BY_PRIORITY.get(r['operational_priority'], SLA_MINUTOS_PADRAO)
         minutos_restantes = sla_alvo - espera
 
+        safe_patient_name = html.escape(r['patient_name'])
+        
+        # --- LÓGICA DO TÍTULO DO EXPANDER (BARRA FECHADA) ---
+        expander_title = ""
+        
+        if r['operational_priority'] == 1:
+            expander_title = f"🚨 EMERGÊNCIA: {safe_patient_name} | Dor: {r['pain']}/10 | Há {espera}m"
+        elif r['status'] == STATUS_RECEIVED:
+            if minutos_restantes > 5:
+                expander_title = f"🟢 NOVO: {safe_patient_name} | Dor: {r['pain']}/10 | Há {espera}m"
+            elif minutos_restantes >= 0:
+                expander_title = f"🟡 ATENÇÃO: {safe_patient_name} | Dor: {r['pain']}/10 | Há {espera}m"
+            else:
+                expander_title = f"🔴 ATRASADO: {safe_patient_name} | Atraso: {abs(minutos_restantes)}m"
+        elif r['status'] == STATUS_ACKNOWLEDGED:
+            expander_title = f"🔵 EM ATENDIMENTO: {safe_patient_name} | Resp: {r['assigned_user_name']}"
+        elif r['status'] == STATUS_ESCALATED:
+            expander_title = f"🟠 AVALIAÇÃO MÉDICA: {safe_patient_name} | Aguardando Médico"
+        elif r['status'] == STATUS_PENDING_NURSE:
+            expander_title = f"🟣 ORDEM MÉDICA PENDENTE: {safe_patient_name} | Executar Conduta"
+        else:
+            expander_title = f"✅ {safe_patient_name} | {r['status']}"
+
+        # --- LÓGICA DO ALERTA INTERNO (CAIXA COLORIDA) ---
         if r['status'] == STATUS_RECEIVED:
             if minutos_restantes > 5:
                 status_display = f"🟢 Protocolo Normal (Espera na Triagem: {espera}m / Alvo: {sla_alvo}m)"
@@ -979,19 +1013,22 @@ elif menu == "📥 Fila Operacional":
             status_display = f"🚨 PRIORIDADE 1 — DECLARAÇÃO DE EMERGÊNCIA DO PACIENTE <br> {status_display} {resp_text}"
         else: status_display += resp_text
 
-        safe_patient_name = html.escape(r['patient_name'])
-        with st.container():
-            st.markdown(f"<div style='padding:15px; border-radius:8px; margin-bottom:15px; {box_style}'><b>{safe_patient_name}</b> — {status_display}", unsafe_allow_html=True)
+        # --- O ACCORDION VISUAL (st.expander) ---
+        with st.expander(f"**{expander_title}**", expanded=False):
+            st.markdown(f"<div style='padding:15px; border-radius:8px; margin-bottom:15px; {box_style}'><b>{safe_patient_name}</b> — {status_display}</div>", unsafe_allow_html=True)
 
             if r['status'] == STATUS_PENDING_NURSE: st.info(f"👨‍⚕️ Instrução Médica: **{html.escape(r['conduct'])}**")
             elif r['status'] != STATUS_ESCALATED:
-                st.markdown(f"Escala Numérica de Dor: {r['pain']}/10 | Declaração de Evolução: {html.escape(r['trend'])}")
-                if r['transcript_original']: st.caption(f"\"{html.escape(r['transcript_original'])}\"")
-                
+                st.markdown(f"**Escala Numérica de Dor:** {r['pain']}/10 | **Declaração de Evolução:** {html.escape(r['trend'])}")
+                if r['transcript_original']: st.caption(f"📝 *\"{html.escape(r['transcript_original'])}\"*")
+
                 audio_path = f"patient_audios/{r['report_uuid']}.wav"
                 if os.path.exists(audio_path):
                     st.audio(audio_path)
 
+            st.divider()
+
+            # --- BOTÕES DE AÇÃO ---
             if r['status'] == STATUS_RECEIVED:
                 if st.button("Assumir Responsabilidade", key=f"rev_{r['id']}", type="primary"):
                     ok, msg = DatabaseService.transition_internal_report(CLINICA_ATUAL_ID, r['report_uuid'], STATUS_ACKNOWLEDGED, OPERADOR_ID, ROLE_ATUAL, OPERADOR_ATUAL, "Profissional assumiu acompanhamento.")
@@ -1015,39 +1052,35 @@ elif menu == "📥 Fila Operacional":
                             if r['patient_declared_emergency'] == 1:
                                 st.warning("⚠️ Casos de Emergência devem ser Escalonados ao médico.")
                             else:
-                                with st.popover("Encerrar Workflow"):
+                                with st.popover("✅ Encerrar Workflow"):
                                     acao = st.selectbox("Ação", ["Dúvida Sanada Remotamente", "Agendamento Efetuado"])
                                     if st.button("Confirmar", key=f"res_{r['id']}", type="primary"):
                                         ok, msg = DatabaseService.transition_internal_report(CLINICA_ATUAL_ID, r['report_uuid'], STATUS_RESOLVED, OPERADOR_ID, ROLE_ATUAL, OPERADOR_ATUAL, f"Workflow Encerrado: [{acao}]", conduct=acao, resolution_source="TEAM")
                                         if ok: st.rerun()
                                         else: st.error(msg)
-                        
-                        # CORREÇÃO HANDOFF: MIGRAR PARA WA.ME (Protocolo Rápido Universal)
+
                         with c2:
                             with st.popover("💬 Chamar no WhatsApp"):
                                 st.caption(f"Contato Direto: {r['patient_phone']}")
                                 custom_msg = st.text_area("Digite a mensagem para enviar:", key=f"wpp_msg_{r['id']}")
                                 if custom_msg.strip():
                                     link_wpp = f"https://wa.me/{r['patient_phone']}?text={urllib.parse.quote(custom_msg.strip())}"
-                                    st.markdown(f'<a href="{link_wpp}" target="_blank" style="display:inline-block; background-color:#25D366; color:white; padding:8px 12px; border-radius:5px; text-decoration:none; font-weight:bold; margin-top:10px;">🚀 Abrir WhatsApp Web com Texto</a>', unsafe_allow_html=True)
-                        
-                        # CORREÇÃO HANDOFF: MIGRAR PARA WA.ME (Protocolo Rápido Universal)
+                                    st.markdown(f'<a href="{link_wpp}" target="_blank" style="display:inline-block; background-color:#25D366; color:white; padding:8px 12px; border-radius:5px; text-decoration:none; font-weight:bold; margin-top:10px;">🚀 Abrir WhatsApp Web</a>', unsafe_allow_html=True)
+
                         with c3:
                             if ROLE_ATUAL in ["NURSE", "ADMIN"]:
                                 with st.popover("🩺 Escalonar Médico"):
                                     obs_medico = st.text_area("Observação curta da triagem:", key=f"obs_doc_{r['id']}")
-                                    if st.button("Gerar Link Seguro e Escalonar", key=f"esc_{r['id']}", type="primary"):
+                                    if st.button("Gerar Link e Escalonar", key=f"esc_{r['id']}", type="primary"):
                                         doc_tk = DatabaseService.escalate_to_doctor(CLINICA_ATUAL_ID, r['report_uuid'], OPERADOR_ID, OPERADOR_ATUAL, ROLE_ATUAL)
                                         if doc_tk:
                                             full_doc_url = f"{PUBLIC_BASE_URL}/?view=doctor&token={doc_tk}"
                                             st.success("Link gerado! Clique abaixo para enviar:")
-                                            
                                             msg_final = f"🚨 *Solicitação de Avaliação Médica - VitaVoz*\n\n*Paciente:* {safe_patient_name}\n*Observação:* {obs_medico.strip()}\n\nAcesse o prontuário: {full_doc_url}"
                                             msg_encoded = urllib.parse.quote(msg_final)
                                             wpp_link = f"https://wa.me/?text={msg_encoded}"
-                                            
-                                            st.markdown(f'<a href="{wpp_link}" target="_blank" style="display:inline-block; background-color:#25D366; color:white; padding:8px 12px; border-radius:5px; text-decoration:none; font-weight:bold; margin-top:10px;">📲 Enviar para o Médico no WhatsApp</a>', unsafe_allow_html=True)
-                                        else: 
+                                            st.markdown(f'<a href="{wpp_link}" target="_blank" style="display:inline-block; background-color:#25D366; color:white; padding:8px 12px; border-radius:5px; text-decoration:none; font-weight:bold; margin-top:10px;">📲 Enviar para o Médico</a>', unsafe_allow_html=True)
+                                        else:
                                             st.error("Erro no escalonamento.")
 
                     elif r['status'] == STATUS_PENDING_NURSE:
@@ -1057,17 +1090,15 @@ elif menu == "📥 Fila Operacional":
                                 ok, msg = DatabaseService.transition_internal_report(CLINICA_ATUAL_ID, r['report_uuid'], STATUS_RESOLVED, OPERADOR_ID, ROLE_ATUAL, OPERADOR_ATUAL, "Equipe executou instrução médica e encerrou workflow.", resolution_source="TEAM_VIA_DOCTOR")
                                 if ok: st.rerun()
                                 else: st.error(msg)
-                        
-                        # CORREÇÃO HANDOFF: MIGRAR PARA WA.ME (Protocolo Rápido Universal)
+
                         with c2:
                             with st.popover("💬 Repassar Ordem no WhatsApp"):
                                 st.caption(f"Contato Direto: {r['patient_phone']}")
                                 custom_msg = st.text_area("Digite a mensagem (ex: receita médica):", key=f"wpp_doc_msg_{r['id']}")
                                 if custom_msg.strip():
                                     link_wpp = f"https://wa.me/{r['patient_phone']}?text={urllib.parse.quote(custom_msg.strip())}"
-                                    st.markdown(f'<a href="{link_wpp}" target="_blank" style="display:inline-block; background-color:#25D366; color:white; padding:8px 12px; border-radius:5px; text-decoration:none; font-weight:bold; margin-top:10px;">🚀 Abrir WhatsApp Web com Texto</a>', unsafe_allow_html=True)
+                                    st.markdown(f'<a href="{link_wpp}" target="_blank" style="display:inline-block; background-color:#25D366; color:white; padding:8px 12px; border-radius:5px; text-decoration:none; font-weight:bold; margin-top:10px;">🚀 Abrir WhatsApp Web</a>', unsafe_allow_html=True)
 
-            st.markdown("</div>", unsafe_allow_html=True)
 
 elif menu == "🗂️ Histórico de Pacientes":
     require_role("NURSE", "ASSISTANT", "ADMIN")
@@ -1149,10 +1180,10 @@ elif menu == "🔗 Cadastrar Paciente":
                 st.success(f"Link de acompanhamento ativo por {dias_protocolo} dias:\n`{patient_link}`")
 
                 msg_patient_enc = urllib.parse.quote(f"Olá {n}, aqui está o seu link seguro de acompanhamento pós-operatório (VitaVoz): {patient_link}")
-                
+
                 # CORREÇÃO HANDOFF: MIGRAR PARA WA.ME (Protocolo Rápido Universal)
                 wpp_patient = f"https://wa.me/{tel_normalized}?text={msg_patient_enc}"
-                
+
                 st.markdown(f'<a href="{wpp_patient}" target="_blank" style="display:inline-block; background-color:#25D366; color:white; padding:8px 12px; border-radius:5px; text-decoration:none; font-weight:bold;">💬 Enviar Link ao Paciente via WhatsApp</a>', unsafe_allow_html=True)
             else: st.error("Todos os campos básicos são obrigatórios.")
 
