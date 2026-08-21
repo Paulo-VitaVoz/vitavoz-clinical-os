@@ -770,7 +770,7 @@ if "patient_session" in st.session_state:
 
     st.caption("🔒 **Aviso de Privacidade e Dados:** Suas respostas são processadas sob sigilo profissional para fins exclusivos do seu acompanhamento pós-procedimento.")
 
-    if st.button("Submeter Evolução do Quadro", type="primary", use_container_width=True):
+  if st.button("Submeter Evolução do Quadro", type="primary", use_container_width=True):
         if not texto_final.strip() and not audio_val and dor_val < 3 and not is_emergency:
             st.warning("Grave um áudio, digite um texto ou indique uma evolução perceptível no seu quadro."); st.stop()
         if len(texto_final) > MAX_REPORT_CHARS:
@@ -785,11 +785,13 @@ if "patient_session" in st.session_state:
             cid, pid, submission_id, dor_val, tendencia, sintomas, texto_final, is_emergency, raw_audio_data
         )
 
-      if not ok_spam:
+        if not ok_spam:
             st.error(msg_spam); st.stop()
 
         st.session_state.form_submission_uuid = str(uuid.uuid4())
-        
+        # st.session_state["texto_transcrito"] = ""
+        # st.session_state["last_audio_hash"] = ""
+
         if is_emergency:
             st.error("🚨 **SINALIZAÇÃO OPERACIONAL REGISTRADA NA FILA.** Não aguarde retorno da Clínica em situações agudas, procure o SAMU (192) ou o hospital de referência.")
         else:
