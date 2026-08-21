@@ -788,10 +788,10 @@ if "patient_session" in st.session_state:
         if not ok_spam:
             st.error(msg_spam); st.stop()
 
-        st.session_state.form_submission_uuid = str(uuid.uuid4())
+       st.session_state.form_submission_uuid = str(uuid.uuid4())
         # Reseta o estado da transcrição pós submissão
-        st.session_state["texto_transcrito"] = ""
-        st.session_state["last_audio_hash"] = ""
+        # st.session_state["texto_transcrito"] = ""
+        # st.session_state["last_audio_hash"] = ""
 
         if is_emergency:
             st.error("🚨 **SINALIZAÇÃO OPERACIONAL REGISTRADA NA FILA.** Não aguarde retorno da Clínica em situações agudas, procure o SAMU (192) ou o hospital de referência.")
