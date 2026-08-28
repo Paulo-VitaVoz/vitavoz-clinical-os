@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="pt-BR" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="VitaVoz — acompanhamento pós-procedimento mais organizado, com relatos por áudio ou texto, triagem inteligente e fila operacional para sua equipe.">
+    <title>VitaVoz | Acompanhamento pós-procedimento inteligente</title>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://unpkg.com/aos@2.3.1/dist/aos.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background: #07111f;
+            color: #f8fafc;
+        }
+
+        .glass {
+            background: rgba(15, 30, 49, .72);
+            backdrop-filter: blur(18px);
+            -webkit-backdrop-filter: blur(18px);
+            border: 1px solid rgba(148, 163, 184, .14);
+        }
+
+        .gradient-text {
+            background: linear-gradient(90deg, #38bdf8 0%, #818cf8 55%, #a78bfa 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .hero-glow {
+            box-shadow: 0 0 80px rgba(56, 189, 248, .13);
+        }
+
+        .btn-glow {
+            box-shadow: 0 12px 35px rgba(14, 165, 233, .24);
+        }
+
+        .grid-bg {
+            background-image:
+                linear-gradient(rgba(148,163,184,.045) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(148,163,184,.045) 1px, transparent 1px);
+            background-size: 48px 48px;
+        }
+
+        .status-dot {
+            box-shadow: 0 0 0 5px rgba(34,197,94,.08), 0 0 18px rgba(34,197,94,.35);
+        }
+    </style>
+</head>
+
+<body class="antialiased selection:bg-sky-500 selection:text-white">
+
+    <!-- NAV -->
+    <nav class="fixed top-0 left-0 right-0 z-50">
+        <div class="max-w-7xl mx-auto px-5 sm:px-6 pt-4">
+            <div class="glass rounded-2xl px-5 py-3 flex items-center justify-between">
+                <a href="#" class="text-2xl font-extrabold tracking-tight text-white">
+                    Vita<span class="text-sky-400">Voz</span>
+                </a>
+
+                <div class="hidden md:flex items-center gap-7 text-sm text-slate-300">
+                    <a href="#problema" class="hover:text-white transition">O problema</a>
+                    <a href="#funciona" class="hover:text-white transition">Como funciona</a>
+                    <a href="#operacao" class="hover:text-white transition">Operação</a>
+                </div>
+
+                <a href="#contato"
+                   class="bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-sm px-5 py-2.5 rounded-xl transition btn-glow">
+                    Conhecer o piloto
+                </a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- HERO -->
+    <section class="relative min-h-screen flex items-center overflow-hidden grid-bg">
+        <div class="absolute inset-0 pointer-events-none">
+            <div class="absolute -top-40 left-1/4 w-[520px] h-[520px] rounded-full bg-sky-500/10 blur-[130px]"></div>
+            <div class="absolute top-1/3 right-0 w-[600px] h-[600px] rounded-full bg-indigo-500/10 blur-[150px]"></div>
+        </div>
+
+        <div class="max-w-7xl mx-auto px-5 sm:px-6 pt-36 pb-20 w-full relative z-10">
+            <div class="grid lg:grid-cols-[1.02fr_.98fr] gap-14 lg:gap-20 items-center">
+
+                <div data-aos="fade-right" data-aos-duration="900">
+                    <div class="inline-flex items-center gap-2 glass rounded-full px-4 py-2 text-sm text-sky-300 mb-7">
+                        <span class="w-2 h-2 rounded-full bg-sky-400"></span>
+                        Acompanhamento pós-procedimento
+                    </div>
+
+                    <h1 class="text-5xl sm:text-6xl lg:text-7xl font-black leading-[.98] tracking-[-0.045em] mb-7">
+                        Seu paciente fala.
+                        <br>
+                        <span class="gradient-text">Sua equipe entende.</span>
+                    </h1>
+
+                    <p class="text-lg sm:text-xl leading-relaxed text-slate-300 max-w-2xl mb-9">
+                        O VitaVoz transforma relatos de pacientes em informações organizadas para a equipe,
+                        ajudando a priorizar atendimentos, acompanhar prazos e reduzir a dependência de conversas
+                        espalhadas pelo WhatsApp.
+                    </p>
+
+                    <div class="flex flex-col sm:flex-row gap-3 mb-8">
+                        <a href="#contato"
+                           class="bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold px-7 py-4 rounded-xl text-center transition hover:-translate-y-0.5 btn-glow">
+                            Quero conhecer o VitaVoz
+                        </a>
+                        <a href="#funciona"
+                           class="glass hover:bg-slate-800/80 text-white font-semibold px-7 py-4 rounded-xl text-center transition">
+                            Ver como funciona
+                        </a>
+                    </div>
+
+                    <div class="flex flex-wrap gap-x-6 gap-y-2 text-sm text-slate-400">
+                        <span>✓ Relatos por áudio ou texto</span>
+                        <span>✓ Triagem estruturada</span>
+                        <span>✓ Fila operacional</span>
+                    </div>
+                </div>
+
+                <!-- PRODUCT MOCKUP -->
+                <div class="relative" data-aos="fade-left" data-aos-duration="900" data-aos-delay="150">
+                    <div class="absolute -inset-8 bg-sky-500/8 blur-3xl rounded-full"></div>
+
+                    <div class="glass rounded-3xl p-2 relative hero-glow">
+                        <div class="bg-[#0b1626] rounded-2xl overflow-hidden border border-slate-700/70">
+
+                            <div class="px-5 py-4 border-b border-slate-700/70 flex items-center justify-between">
+                                <div>
+                                    <div class="text-white font-bold">Fila de acompanhamento</div>
+                                    <div class="text-xs text-slate-500 mt-0.5">Visão operacional</div>
+                                </div>
+                                <div class="flex items-center gap-2 text-xs text-emerald-400">
+                                    <span class="w-2 h-2 rounded-full bg-emerald-400 status-dot"></span>
+                                    Atualizado agora
+                                </div>
+                            </div>
+
+                            <div class="p-5 space-y-3">
+
+                                <div class="rounded-2xl border border-rose-400/20 bg-rose-400/[.06] p-4">
+                                    <div class="flex items-center justify-between mb-3">
+                                        <span class="text-xs font-bold tracking-wide text-rose-300 uppercase">Crítico</span>
+                                        <span class="text-[11px] text-slate-500">há 2 min</span>
+                                    </div>
+                                    <div class="text-white font-semibold text-sm">Paciente • Pós-procedimento</div>
+                                    <div class="text-slate-400 text-xs mt-1.5">
+                                        Relato recebido por áudio e encaminhado para avaliação da equipe.
+                                    </div>
+                                    <div class="mt-3 inline-flex items-center gap-2 text-xs text-rose-300">
+                                        <span>Prioridade alta</span>
+                                        <span class="text-slate-600">•</span>
+                                        <span>SLA em acompanhamento</span>
+                                    </div>
+                                </div>
+
+                                <div class="rounded-2xl border border-amber-400/20 bg-amber-400/[.05] p-4">
+                                    <div class="flex items-center justify-between mb-3">
+                                        <span class="text-xs font-bold tracking-wide text-amber-300 uppercase">Atenção</span>
+                                        <span class="text-[11px] text-slate-500">há 11 min</span>
+                                    </div>
+                                    <div class="text-white font-semibold text-sm">Paciente • Evolução D+5</div>
+                                    <div class="text-slate-400 text-xs mt-1.5">
+                                        Dor relatada e evolução descrita pelo paciente.
+                                    </div>
+                                    <div class="mt-3 text-xs text-amber-300">Aguardando avaliação</div>
+                                </div>
+
+                                <div class="rounded-2xl border border-emerald-400/15 bg-emerald-400/[.04] p-4">
+                                    <div class="flex items-center justify-between mb-3">
+                                        <span class="text-xs font-bold tracking-wide text-emerald-300 uppercase">Normal</span>
+                                        <span class="text-[11px] text-slate-500">há 18 min</span>
+                                    </div>
+                                    <div class="text-white font-semibold text-sm">Paciente • Acompanhamento</div>
+                                    <div class="text-slate-400 text-xs mt-1.5">
+                                        Relato sem indicação de prioridade elevada.
+                                    </div>
+                                    <div class="mt-3 text-xs text-emerald-300">Fluxo normal</div>
+                                </div>
+
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="absolute -bottom-6 -left-6 glass rounded-2xl px-4 py-3 hidden sm:block">
+                        <div class="text-[11px] uppercase tracking-wider text-slate-500">Organização</div>
+                        <div class="text-sm font-bold text-white mt-1">Tudo em uma fila operacional</div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </section>
+
+    <!-- PROBLEMA -->
+    <section id="problema" class="py-24 border-t border-slate-800/70 bg-[#091423]">
+        <div class="max-w-7xl mx-auto px-5 sm:px-6">
+            <div class="max-w-3xl mb-14" data-aos="fade-up">
+                <div class="text-sky-400 text-sm font-bold uppercase tracking-[.18em] mb-4">O problema</div>
+                <h2 class="text-4xl sm:text-5xl font-extrabold tracking-tight mb-5">
+                    O pós-procedimento não termina quando o paciente sai da clínica.
+                </h2>
+                <p class="text-slate-400 text-lg leading-relaxed">
+                    A equipe continua recebendo dúvidas, relatos, áudios, fotos e atualizações.
+                    Quando cada contato fica espalhado em canais diferentes, acompanhar o que importa
+                    fica mais difícil.
+                </p>
+            </div>
+
+            <div class="grid md:grid-cols-3 gap-5">
+
+                <div class="glass rounded-2xl p-7" data-aos="fade-up" data-aos-delay="50">
+                    <div class="text-3xl mb-5">💬</div>
+                    <h3 class="text-xl font-bold mb-3">Informação espalhada</h3>
+                    <p class="text-sm text-slate-400 leading-relaxed">
+                        Mensagens, áudios e retornos ficam distribuídos em conversas que precisam ser
+                        acompanhadas manualmente.
+                    </p>
+                </div>
+
+                <div class="glass rounded-2xl p-7" data-aos="fade-up" data-aos-delay="100">
+                    <div class="text-3xl mb-5">⏱️</div>
+                    <h3 class="text-xl font-bold mb-3">Prioridades pouco claras</h3>
+                    <p class="text-sm text-slate-400 leading-relaxed">
+                        Nem todo relato tem a mesma urgência. A equipe precisa identificar o que exige
+                        atenção primeiro.
+                    </p>
+                </div>
+
+                <div class="glass rounded-2xl p-7" data-aos="fade-up" data-aos-delay="150">
+                    <div class="text-3xl mb-5">📋</div>
+                    <h3 class="text-xl font-bold mb-3">Pouca rastreabilidade</h3>
+                    <p class="text-sm text-slate-400 leading-relaxed">
+                        Sem uma fila própria, pode ser difícil saber o que chegou, quem está tratando,
+                        há quanto tempo e o que já foi resolvido.
+                    </p>
+                </div>
+
+            </div>
+        </div>
+    </section>
+
+    <!-- COMO FUNCIONA -->
+    <section id="funciona" class="py-24 bg-[#07111f]">
+        <div class="max-w-7xl mx-auto px-5 sm:px-6">
+
+            <div class="text-center max-w-3xl mx-auto mb-16" data-aos="fade-up">
+                <div class="text-sky-400 text-sm font-bold uppercase tracking-[.18em] mb-4">Como funciona</div>
+                <h2 class="text-4xl sm:text-5xl font-extrabold tracking-tight mb-5">
+                    Do relato do paciente à <span class="gradient-text">fila de atendimento.</span>
+                </h2>
+                <p class="text-slate-400 text-lg">
+                    Um fluxo simples para transformar comunicação em informação operacional.
+                </p>
+            </div>
+
+            <div class="grid lg:grid-cols-3 gap-6">
+
+                <div class="relative glass rounded-3xl p-8" data-aos="fade-up">
+                    <div class="flex items-center justify-between mb-7">
+                        <span class="w-11 h-11 rounded-xl bg-sky-400/10 border border-sky-400/20 flex items-center justify-center text-sky-300 font-extrabold">01</span>
+                        <span class="text-xs text-slate-500">Entrada</span>
+                    </div>
+                    <h3 class="text-2xl font-bold mb-4">O paciente relata</h3>
+                    <p class="text-slate-400 leading-relaxed">
+                        Por um link da clínica, o paciente pode registrar sua evolução usando texto
+                        ou áudio, sem precisar transformar a experiência em um formulário complexo.
+                    </p>
+                </div>
+
+                <div class="relative glass rounded-3xl p-8" data-aos="fade-up" data-aos-delay="100">
+                    <div class="flex items-center justify-between mb-7">
+                        <span class="w-11 h-11 rounded-xl bg-indigo-400/10 border border-indigo-400/20 flex items-center justify-center text-indigo-300 font-extrabold">02</span>
+                        <span class="text-xs text-slate-500">Processamento</span>
+                    </div>
+                    <h3 class="text-2xl font-bold mb-4">A informação é estruturada</h3>
+                    <p class="text-slate-400 leading-relaxed">
+                        O VitaVoz transforma o relato em uma informação organizada para a operação,
+                        permitindo visualizar conteúdo, prioridade e contexto do acompanhamento.
+                    </p>
+                </div>
+
+                <div class="relative glass rounded-3xl p-8" data-aos="fade-up" data-aos-delay="200">
+                    <div class="flex items-center justify-between mb-7">
+                        <span class="w-11 h-11 rounded-xl bg-rose-400/10 border border-rose-400/20 flex items-center justify-center text-rose-300 font-extrabold">03</span>
+                        <span class="text-xs text-slate-500">Ação</span>
+                    </div>
+                    <h3 class="text-2xl font-bold mb-4">A equipe decide o próximo passo</h3>
+                    <p class="text-slate-400 leading-relaxed">
+                        A equipe acompanha uma fila priorizada, registra o andamento e mantém
+                        rastreabilidade do atendimento. O sistema apoia a decisão — não substitui
+                        a avaliação profissional.
+                    </p>
+                </div>
+
+            </div>
+        </div>
+    </section>
+
+    <!-- OPERAÇÃO -->
+    <section id="operacao" class="py-24 border-y border-slate-800/70 bg-[#091423]">
+        <div class="max-w-7xl mx-auto px-5 sm:px-6">
+
+            <div class="grid lg:grid-cols-2 gap-14 items-center">
+
+                <div data-aos="fade-right">
+                    <div class="text-sky-400 text-sm font-bold uppercase tracking-[.18em] mb-4">Feito para a operação</div>
+                    <h2 class="text-4xl sm:text-5xl font-extrabold tracking-tight mb-6">
+                        Menos conversa perdida.
+                        <span class="gradient-text">Mais controle.</span>
+                    </h2>
+                    <p class="text-slate-400 text-lg leading-relaxed mb-8">
+                        O VitaVoz não tenta transformar sua clínica em um laboratório de tecnologia.
+                        Ele organiza uma rotina que já existe: receber relatos, entender o que aconteceu,
+                        priorizar, encaminhar e acompanhar.
+                    </p>
+
+                    <div class="space-y-5">
+                        <div class="flex gap-4">
+                            <div class="mt-1 w-6 h-6 rounded-full bg-sky-400/10 border border-sky-400/20 flex items-center justify-center text-sky-300 text-xs">✓</div>
+                            <div>
+                                <div class="font-bold text-white">Triagem em três níveis</div>
+                                <div class="text-sm text-slate-500 mt-1">Normal, atenção e crítico para apoiar a priorização.</div>
+                            </div>
+                        </div>
+
+                        <div class="flex gap-4">
+                            <div class="mt-1 w-6 h-6 rounded-full bg-sky-400/10 border border-sky-400/20 flex items-center justify-center text-sky-300 text-xs">✓</div>
+                            <div>
+                                <div class="font-bold text-white">Acompanhamento de SLA</div>
+                                <div class="text-sm text-slate-500 mt-1">A equipe consegue visualizar o tempo e o estado de cada atendimento.</div>
+                            </div>
+                        </div>
+
+                        <div class="flex gap-4">
+                            <div class="mt-1 w-6 h-6 rounded-full bg-sky-400/10 border border-sky-400/20 flex items-center justify-center text-sky-300 text-xs">✓</div>
+                            <div>
+                                <div class="font-bold text-white">Rastreabilidade operacional</div>
+                                <div class="text-sm text-slate-500 mt-1">Histórico dos relatos e das ações realizadas pela equipe.</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div data-aos="fade-left">
+                    <div class="glass rounded-3xl p-3 hero-glow">
+                        <div class="bg-[#0b1626] rounded-2xl p-6 border border-slate-700/60">
+
+                            <div class="flex items-center justify-between mb-7">
+                                <div>
+                                    <div class="text-white font-bold">Resumo da operação</div>
+                                    <div class="text-xs text-slate-500 mt-1">Hoje</div>
+                                </div>
+                                <div class="text-xs px-3 py-1.5 rounded-full bg-slate-800 text-slate-300">Painel</div>
+                            </div>
+
+                            <div class="grid grid-cols-3 gap-3 mb-6">
+                                <div class="rounded-2xl bg-slate-800/60 p-4 border border-slate-700/50">
+                                    <div class="text-2xl font-extrabold text-white">18</div>
+                                    <div class="text-xs text-slate-500 mt-1">Recebidos</div>
+                                </div>
+                                <div class="rounded-2xl bg-slate-800/60 p-4 border border-slate-700/50">
+                                    <div class="text-2xl font-extrabold text-white">05</div>
+                                    <div class="text-xs text-slate-500 mt-1">Em atenção</div>
+                                </div>
+                                <div class="rounded-2xl bg-slate-800/60 p-4 border border-slate-700/50">
+                                    <div class="text-2xl font-extrabold text-white">02</div>
+                                    <div class="text-xs text-slate-500 mt-1">Críticos</div>
+                                </div>
+                            </div>
+
+                            <div class="space-y-2">
+                                <div class="flex items-center justify-between rounded-xl bg-slate-800/40 px-4 py-3">
+                                    <span class="text-sm text-slate-300">Recebido</span>
+                                    <span class="text-xs text-sky-300">Aguardando triagem</span>
+                                </div>
+                                <div class="flex items-center justify-between rounded-xl bg-slate-800/40 px-4 py-3">
+                                    <span class="text-sm text-slate-300">Em atendimento</span>
+                                    <span class="text-xs text-amber-300">Equipe acionada</span>
+                                </div>
+                                <div class="flex items-center justify-between rounded-xl bg-slate-800/40 px-4 py-3">
+                                    <span class="text-sm text-slate-300">Resolvido</span>
+                                    <span class="text-xs text-emerald-300">Finalizado</span>
+                                </div>
+                            </div>
+
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </section>
+
+    <!-- DIFERENCIAL -->
+    <section class="py-24 bg-[#07111f]">
+        <div class="max-w-5xl mx-auto px-5 sm:px-6 text-center" data-aos="fade-up">
+            <div class="text-sky-400 text-sm font-bold uppercase tracking-[.18em] mb-4">Uma mudança de rotina</div>
+            <h2 class="text-4xl sm:text-5xl font-extrabold tracking-tight mb-6">
+                O objetivo não é tirar pessoas do processo.
+                <br>
+                <span class="gradient-text">É dar contexto para quem precisa agir.</span>
+            </h2>
+            <p class="text-slate-400 text-lg leading-relaxed max-w-3xl mx-auto">
+                O VitaVoz foi pensado para apoiar a equipe no acompanhamento pós-procedimento:
+                organizar os relatos, destacar prioridades e criar uma trilha operacional clara.
+                A decisão clínica continua sendo da equipe responsável.
+            </p>
+        </div>
+    </section>
+
+    <!-- CTA -->
+    <section id="contato" class="relative py-28 overflow-hidden">
+        <div class="absolute inset-0 bg-gradient-to-b from-sky-950/20 to-indigo-950/20"></div>
+        <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[700px] h-[400px] bg-sky-500/8 blur-[120px] rounded-full"></div>
+
+        <div class="max-w-4xl mx-auto px-5 sm:px-6 text-center relative z-10" data-aos="zoom-in">
+
+            <div class="inline-flex items-center gap-2 glass rounded-full px-4 py-2 text-sm text-slate-300 mb-7">
+                <span class="w-2 h-2 rounded-full bg-sky-400"></span>
+                Projeto em piloto
+            </div>
+
+            <h2 class="text-4xl sm:text-6xl font-black tracking-tight mb-6">
+                Quer ver o VitaVoz
+                <span class="gradient-text">funcionando?</span>
+            </h2>
+
+            <p class="text-slate-300 text-lg sm:text-xl leading-relaxed max-w-2xl mx-auto mb-10">
+                Converse com a gente para conhecer o fluxo, entender a operação e avaliar um piloto
+                na realidade da sua clínica.
+            </p>
+
+            <a href="https://wa.me/5548984640578?text=Ol%C3%A1%21%20Gostaria%20de%20conhecer%20o%20VitaVoz%20e%20entender%20como%20funciona%20o%20piloto."
+               target="_blank"
+               rel="noopener noreferrer"
+               class="inline-flex items-center justify-center gap-2 bg-sky-500 hover:bg-sky-400 text-slate-950 font-extrabold text-lg px-9 py-4 rounded-2xl transition hover:-translate-y-0.5 btn-glow">
+                Falar sobre o piloto
+                <span>→</span>
+            </a>
+
+            <div class="mt-7 text-xs text-slate-500">
+                Demonstração e avaliação inicial sem compromisso.
+            </div>
+        </div>
+    </section>
+
+    <!-- FOOTER -->
+    <footer class="border-t border-slate-800/70 bg-[#050d18]">
+        <div class="max-w-7xl mx-auto px-5 sm:px-6 py-8 flex flex-col sm:flex-row gap-4 justify-between items-center">
+            <div class="text-lg font-extrabold">
+                Vita<span class="text-sky-400">Voz</span>
+            </div>
+            <div class="text-xs text-slate-600 text-center sm:text-right">
+                Tecnologia de apoio à operação e ao acompanhamento pós-procedimento.
+            </div>
+        </div>
+    </footer>
+
+    <script src="https://unpkg.com/aos@2.3.1/dist/aos.js"></script>
+    <script>
+        AOS.init({
+            once: true,
+            duration: 700,
+            offset: 50
+        });
+    </script>
+
+</body>
+</html>
