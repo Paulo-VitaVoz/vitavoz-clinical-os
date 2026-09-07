@@ -758,13 +758,23 @@ st.markdown('<div class="main-header">VitaVoz</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">Plataforma de Gestão Operacional do Acompanhamento Pós-Procedimento</div>', unsafe_allow_html=True)
 
 with st.sidebar:
-    if os.path.exists("logo_vitavoz.png.jfif"):
-        st.sidebar.image("logo_vitavoz.png.jfif", use_container_width=True)
+    # Cria uma logo pequena, alinhada à ESQUERDA, bem discreta no topo
+    if logo_base64:
+        st.markdown(
+            f"""
+            <div style="display: flex; justify-content: flex-start; align-items: center; padding-bottom: 20px; border-bottom: 1px solid rgba(255,255,255,0.05); margin-bottom: 15px;">
+                <img src="data:image/png;base64,{logo_base64}" style="width: 80px; height: auto;">
+            </div>
+            """, 
+            unsafe_allow_html=True
+        )
     else:
-        st.sidebar.markdown("<h2 style='text-align: center; color: #38bdf8;'>VitaVoz</h2><hr style='border-color: rgba(255,255,255,0.1);'>", unsafe_allow_html=True)
+        st.markdown("<h3 style='color: #38bdf8; margin-top: 0; padding-bottom: 10px;'>VitaVoz</h3><hr style='border-color: rgba(255,255,255,0.1); margin-top: 0;'>", unsafe_allow_html=True)
 
-    st.markdown(f"<div style='color:#e2e8f0; font-size: 15px; font-weight:600; text-align:center; margin-bottom:25px;'>👤 {html.escape(OPERADOR_ATUAL)} <br><span style='color:#94a3b8; font-size:12px;'>({ROLE_ATUAL})</span></div>", unsafe_allow_html=True)
+    # Informação do Usuário também menor e alinhada à esquerda
+    st.markdown(f"<div style='color:#e2e8f0; font-size: 13px; font-weight:600; margin-bottom:20px;'>👤 {html.escape(OPERADOR_ATUAL)} <br><span style='color:#94a3b8; font-size:11px;'>({ROLE_ATUAL})</span></div>", unsafe_allow_html=True)
 
+    # Menu
     menu_opcoes = ["📊 Dashboard Inteligente", "📥 Fila Operacional"]
     if ROLE_ATUAL in ["NURSE", "ASSISTANT", "ADMIN"]: menu_opcoes.append("🗂️ Histórico de Pacientes")
     if ROLE_ATUAL in ["NURSE", "ADMIN"]: menu_opcoes.append("🔗 Cadastrar Paciente")
