@@ -98,20 +98,20 @@ st.markdown("""
     h1, h2, h3, h4, h5, h6, p, span, div { color: #e2e8f0; font-family: 'Inter', sans-serif; }
     
     /* Textos do Painel Central e Títulos */
-    .main-header { font-size: 36px; font-weight: 900; color: #ffffff; margin-bottom: 4px; letter-spacing: -0.5px;}
-    .sub-header { font-size: 16px; color: #94a3b8; margin-bottom: 25px; line-height: 1.5; }
+    .main-header { font-size: 32px; font-weight: 900; color: #ffffff; margin-bottom: 4px; letter-spacing: -0.5px;}
+    .sub-header { font-size: 15px; color: #94a3b8; margin-bottom: 25px; line-height: 1.5; }
     
     /* Cards de Métricas (Dashboard) */
     .metric-card { 
-        padding: 20px; 
-        border-radius: 16px; 
+        padding: 16px; 
+        border-radius: 12px; 
         border: 1px solid rgba(56, 189, 248, 0.2); 
         text-align: center; 
         background: linear-gradient(145deg, #0f172a 0%, #1e293b 100%); 
-        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
     }
-    .metric-val { font-size: 32px; font-weight: 900; margin-bottom: 5px; color: #38bdf8; text-shadow: 0 0 10px rgba(56,189,248,0.3);}
-    .metric-card p { color: #94a3b8 !important; font-size: 14px; font-weight: 600;}
+    .metric-val { font-size: 28px; font-weight: 900; margin-bottom: 5px; color: #38bdf8; text-shadow: 0 0 10px rgba(56,189,248,0.2);}
+    .metric-card p { color: #94a3b8 !important; font-size: 13px; font-weight: 600;}
     
     /* Estilização da Barra Lateral */
     [data-testid="stSidebar"] {
@@ -119,16 +119,30 @@ st.markdown("""
         border-right: 1px solid rgba(56, 189, 248, 0.15);
     }
 
-    /* Transformando os Radio Buttons da Sidebar em Blocos Neon */
+    /* Container da Logo na Sidebar (MUITO MENOR AGORA) */
+    .sidebar-logo-container {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        padding: 0px 0 20px 0;
+        border-bottom: 1px solid rgba(255,255,255,0.05);
+        margin-bottom: 15px;
+    }
+    .sidebar-logo { 
+        width: 140px; /* <--- AQUI A LOGO FICOU PEQUENA E ELEGANTE */
+        max-width: 100%; 
+    }
+
+    /* Transformando os Radio Buttons da Sidebar em Blocos Neon (FINOS E LEVES) */
     [data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child { display: none !important; }
     
     [data-testid="stSidebar"] div[role="radiogroup"] > label {
-        background: rgba(15, 23, 42, 0.6);
+        background: rgba(15, 23, 42, 0.4);
         border: 1px solid rgba(148, 163, 184, 0.1);
-        border-radius: 12px;
-        padding: 14px 16px;
-        margin-bottom: 12px;
-        transition: all 0.3s ease;
+        border-radius: 8px; /* Menos arredondado */
+        padding: 10px 14px; /* <--- BEM MAIS FINO AQUI */
+        margin-bottom: 8px; /* Menos espaço entre botões */
+        transition: all 0.2s ease;
         cursor: pointer;
     }
     
@@ -141,13 +155,14 @@ st.markdown("""
     [data-testid="stSidebar"] div[role="radiogroup"] > label[data-baseweb="radio"][aria-checked="true"] {
         background: linear-gradient(90deg, rgba(56,189,248,0.15) 0%, rgba(139,92,246,0.15) 100%);
         border: 1px solid #38bdf8;
-        box-shadow: 0 0 15px rgba(56, 189, 248, 0.2);
+        box-shadow: 0 0 10px rgba(56, 189, 248, 0.15);
     }
     
+    /* Fonte dos botões menor e mais limpa */
     [data-testid="stSidebar"] div[role="radiogroup"] > label p {
-        color: #ffffff !important;
+        color: #e2e8f0 !important;
         font-weight: 600 !important;
-        font-size: 14px !important;
+        font-size: 13px !important; /* <--- FONTE MENOR */
         margin: 0;
     }
     </style>
