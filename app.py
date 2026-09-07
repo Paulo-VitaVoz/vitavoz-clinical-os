@@ -12,6 +12,7 @@ import hashlib
 import bcrypt
 import secrets
 import io
+import base64  # <-- Adicionado para carregar a logo
 import html
 from datetime import datetime, timedelta, timezone
 import urllib.parse
@@ -24,6 +25,16 @@ import speech_recognition as sr
 
 # Cria a pasta para armazenar os áudios fisicamente no servidor
 os.makedirs("patient_audios", exist_ok=True)
+
+# Função para carregar a logo em HTML
+def get_base64_image(image_path):
+    try:
+        with open(image_path, "rb") as img_file:
+            return base64.b64encode(img_file.read()).decode()
+    except FileNotFoundError:
+        return ""
+
+logo_base64 = get_base64_image("logo_vitavoz.png")
 
 # ==============================================================================
 # 1. CONSTANTES E VALIDAÇÃO ESTRITA DE AMBIENTE
@@ -66,11 +77,10 @@ ACTOR_DOCTOR = "DOCTOR"
 ACTOR_INTERNAL = "INTERNAL_USER"
 ACTOR_SYSTEM = "SYSTEM"
 
-# Corrigido validação para Escalonamento Múltiplo
 VALID_TRANSITIONS = {
     STATUS_RECEIVED: [STATUS_ACKNOWLEDGED],
     STATUS_ACKNOWLEDGED: [STATUS_ESCALATED, STATUS_RESOLVED],
-    STATUS_ESCALATED: [STATUS_ESCALATED, STATUS_RESOLVED, STATUS_PENDING_NURSE], # <-- Correção 1
+    STATUS_ESCALATED: [STATUS_ESCALATED, STATUS_RESOLVED, STATUS_PENDING_NURSE],
     STATUS_PENDING_NURSE: [STATUS_RESOLVED],
     STATUS_RESOLVED: []
 }
@@ -79,24 +89,88 @@ ROLE_PERMISSIONS = {
     f"{STATUS_RECEIVED}->{STATUS_ACKNOWLEDGED}": ["NURSE", "ASSISTANT", "ADMIN"],
     f"{STATUS_ACKNOWLEDGED}->{STATUS_ESCALATED}": ["NURSE", "ADMIN"],
     f"{STATUS_ACKNOWLEDGED}->{STATUS_RESOLVED}": ["NURSE", "ASSISTANT", "ADMIN"],
-    f"{STATUS_ESCALATED}->{STATUS_ESCALATED}": ["NURSE", "ADMIN"],                # <-- Correção 1
+    f"{STATUS_ESCALATED}->{STATUS_ESCALATED}": ["NURSE", "ADMIN"],
     f"{STATUS_ESCALATED}->{STATUS_PENDING_NURSE}": ["DOCTOR"],
     f"{STATUS_ESCALATED}->{STATUS_RESOLVED}": ["DOCTOR"],
     f"{STATUS_PENDING_NURSE}->{STATUS_RESOLVED}": ["NURSE", "ASSISTANT", "ADMIN"]
 }
 
-st.set_page_config(page_title="VitaVoz | Gestão Operacional", layout="wide", page_icon="📋")
+st.set_page_config(page_title="VitaVoz | Gestão Operacional", layout="wide", page_icon="🛡️")
+
+# CSS MESTRE - COMBINANDO O LIGHT MODE CENTRAL COM O MENU FUTURISTA DARK
 st.markdown("""
     <style>
     .main-header { font-size: 32px; font-weight: 700; color: #0F172A; margin-bottom: 4px; }
     .sub-header { font-size: 16px; color: #475569; margin-bottom: 25px; line-height: 1.4; }
     .hide-sidebar [data-testid="stSidebar"] { display: none !important; }
-    .metric-card { padding: 15px; border-radius: 8px; border: 1px solid #E2E8F0; text-align: center; }
+    .metric-card { padding: 15px; border-radius: 8px; border: 1px solid #E2E8F0; text-align: center; background: white;}
     .metric-val { font-size: 24px; font-weight: bold; margin-bottom: 5px; }
     .step-pill { display: inline-block; padding: 6px 12px; border-radius: 16px; font-size: 13px; font-weight: bold; margin-right: 8px; }
     .step-active { background-color: #3B82F6; color: white; }
     .step-done { background-color: #10B981; color: white; }
     .step-idle { background-color: #E2E8F0; color: #64748B; }
+
+    /* --- INÍCIO DO CSS FUTURISTA PARA A BARRA LATERAL --- */
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #07111f 0%, #0b1626 100%);
+        border-right: 1px solid rgba(56, 189, 248, 0.15);
+    }
+    
+    /* Container da Logo na Sidebar */
+    .sidebar-logo-container {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        padding: 10px 0 30px 0;
+        border-bottom: 1px solid rgba(255,255,255,0.05);
+        margin-bottom: 20px;
+    }
+    .sidebar-logo {
+        width: 220px; /* Tamanho da logo ajustado */
+        max-width: 100%;
+    }
+
+    /* Esconde as bolinhas padrão do radio button na sidebar */
+    [data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child {
+        display: none !important;
+    }
+    
+    /* Formato do Botão Inativo no Menu Lateral */
+    [data-testid="stSidebar"] div[role="radiogroup"] > label {
+        background: rgba(15, 23, 42, 0.6);
+        border: 1px solid rgba(148, 163, 184, 0.1);
+        border-radius: 12px;
+        padding: 14px 16px;
+        margin-bottom: 12px;
+        transition: all 0.3s ease;
+        color: #cbd5e1;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+    }
+    
+    /* Efeito Hover (Passar o mouse) */
+    [data-testid="stSidebar"] div[role="radiogroup"] > label:hover {
+        border-color: rgba(56, 189, 248, 0.5);
+        background: rgba(56, 189, 248, 0.05);
+        transform: translateX(4px);
+    }
+
+    /* Formato do Botão ATIVO (Selecionado) */
+    [data-testid="stSidebar"] div[role="radiogroup"] > label[data-baseweb="radio"][aria-checked="true"] {
+        background: linear-gradient(90deg, rgba(56,189,248,0.15) 0%, rgba(139,92,246,0.15) 100%);
+        border: 1px solid #38bdf8;
+        box-shadow: 0 0 15px rgba(56, 189, 248, 0.2);
+    }
+    
+    /* Ajusta a cor do texto das opções para não herdar o padrão cinza do Light Mode */
+    [data-testid="stSidebar"] div[role="radiogroup"] > label p {
+        color: #ffffff !important;
+        font-weight: 600 !important;
+        font-size: 14px !important;
+        margin: 0;
+    }
+    /* --- FIM DO CSS FUTURISTA --- */
     </style>
 """, unsafe_allow_html=True)
 
@@ -139,7 +213,6 @@ def generate_secure_token() -> str:
     return secrets.token_urlsafe(32)
 
 class AudioTranscriptionService:
-    """Provider isolado para transcrição de áudio via API pública do Google."""
     @staticmethod
     def transcribe(audio_bytes: bytes) -> str:
         r = sr.Recognizer()
@@ -153,7 +226,6 @@ class AudioTranscriptionService:
             raise ConnectionError(f"Erro na API de transcrição: {e}")
         except Exception as e:
             raise RuntimeError(f"Falha técnica ao processar áudio: {e}")
-
 
 class BackupService:
     MAGIC = b"VTVZ"
@@ -276,7 +348,6 @@ class DatabaseService:
         sla_alvo = SLA_BY_PRIORITY[oper_priority]
         report_uuid = str(uuid.uuid4())
 
-        # Salva fisicamente o áudio no servidor caso tenha sido enviado (CORREÇÃO HANDOFF APLICADA)
         if audio_bytes:
             with open(f"patient_audios/{report_uuid}.wav", "wb") as f:
                 f.write(audio_bytes)
@@ -405,7 +476,6 @@ class DatabaseService:
 
     @staticmethod
     def escalate_to_doctor(clinic_id, report_uuid, actor_user_id, actor_name, actor_role):
-        # PERMISSÃO CORRIGIDA PARA MÚLTIPLOS ESCALONAMENTOS
         has_perm = actor_role in ROLE_PERMISSIONS.get(f"{STATUS_ACKNOWLEDGED}->{STATUS_ESCALATED}", []) or \
                    actor_role in ROLE_PERMISSIONS.get(f"{STATUS_ESCALATED}->{STATUS_ESCALATED}", [])
         if not has_perm: return None
@@ -417,7 +487,6 @@ class DatabaseService:
             c = conn.cursor()
             c.execute("BEGIN IMMEDIATE")
 
-            # ESTADO CORRIGIDO PARA MÚLTIPLOS ESCALONAMENTOS
             rep_data = c.execute("SELECT patient_id, status FROM reports WHERE report_uuid = ? AND clinic_id = ? AND status IN (?, ?)", (report_uuid, clinic_id, STATUS_ACKNOWLEDGED, STATUS_ESCALATED)).fetchone()
             if not rep_data:
                 conn.rollback(); return None
@@ -734,9 +803,6 @@ if "patient_session" in st.session_state:
     st.markdown("📝 **Evolução Clínica** (Grave um áudio ou digite)")
     audio_val = st.audio_input("🎤 Clique no microfone para gravar seu relato")
 
-    # --------------------------------------------------------------------------
-    # FEATURE 1: TRANSCRIÇÃO GRATUITA DE ÁUDIO VIA SPEECH_RECOGNITION
-    # --------------------------------------------------------------------------
     if "texto_transcrito" not in st.session_state:
         st.session_state["texto_transcrito"] = ""
 
@@ -744,7 +810,6 @@ if "patient_session" in st.session_state:
         audio_bytes = audio_val.getvalue()
         current_audio_hash = hashlib.md5(audio_bytes).hexdigest()
 
-        # Só transcreve se o áudio mudou (para não transcrever em loops do Streamlit)
         if st.session_state.get("last_audio_hash") != current_audio_hash:
             with st.spinner("🧠 Transcrevendo áudio..."):
                 try:
@@ -778,7 +843,6 @@ if "patient_session" in st.session_state:
 
         submission_id = st.session_state.get("form_submission_uuid", str(uuid.uuid4()))
 
-        # Correção Handoff 2: Captura os bytes brutos do áudio para evitar salvar arquivo vazio
         raw_audio_data = audio_val.getvalue() if audio_val else None
 
         ok_spam, msg_spam = DatabaseService.submit_patient_report(
@@ -789,8 +853,6 @@ if "patient_session" in st.session_state:
             st.error(msg_spam); st.stop()
 
         st.session_state.form_submission_uuid = str(uuid.uuid4())
-        # st.session_state["texto_transcrito"] = ""
-        # st.session_state["last_audio_hash"] = ""
 
         if is_emergency:
             st.error("🚨 **SINALIZAÇÃO OPERACIONAL REGISTRADA NA FILA.** Não aguarde retorno da Clínica em situações agudas, procure o SAMU (192) ou o hospital de referência.")
@@ -846,17 +908,549 @@ st.markdown('<div class="main-header">VitaVoz</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">Plataforma de Gestão Operacional do Acompanhamento Pós-Procedimento</div>', unsafe_allow_html=True)
 
 with st.sidebar:
-    # --- LOGO DA CLÍNICA NA BARRA LATERAL ---
-    if os.path.exists("logo.png"):
-        st.sidebar.image("logo.png", use_container_width=True)
+    if logo_base64:
+        st.markdown(
+            f"""
+            <div class="sidebar-logo-container">
+                <img src="data:image/png;base64,{logo_base64}" class="sidebar-logo">
+            </div>
+            """, 
+            unsafe_allow_html=True
+        )
     else:
-        st.sidebar.markdown("### 🏥 Instituto Dr. Lelis")
-        st.sidebar.markdown("---")
+        st.markdown("<h2 style='text-align: center; color: #38bdf8;'>VitaVoz</h2><hr style='border-color: rgba(255,255,255,0.1);'>", unsafe_allow_html=True)
 
-    st.markdown(f"👤 **{html.escape(OPERADOR_ATUAL)}** ({ROLE_ATUAL})")
-    if st.button("Finalizar Sessão Protegida", type="secondary"):
-        st.session_state.clear(); st.rerun()
+    st.markdown(f"<div style='color:#e2e8f0; font-size: 15px; font-weight:600; text-align:center; margin-bottom:25px;'>👤 {html.escape(OPERADOR_ATUAL)} <br><span style='color:#94a3b8; font-size:12px;'>({ROLE_ATUAL})</span></div>", unsafe_allow_html=True)
 
+    menu_opcoes = ["📊 Dashboard Inteligente", "📥 Fila Operacional"]
+    if ROLE_ATUAL in ["NURSE", "ASSISTANT", "ADMIN"]: menu_opcoes.append("🗂️ Histórico de Pacientes")
+    if ROLE_ATUAL in ["NURSE", "ADMIN"]: menu_opcoes.append("🔗 Cadastrar Paciente")
+    if ROLE_ATUAL == "ADMIN":
+        menu_opcoes.append("👥 Usuários e Acessos")
+        menu_opcoes.append("🩺 Health Check Operacional")
+    menu_opcoes.append("⚙️ Segurança da Conta")
+    menu = st.radio("Navegação Restrita", menu_opcoes)
+
+# ==============================================================================
+# 10. DASHBOARD B2B & BACKOFFICE
+# ==============================================================================
+if menu == "📊 Dashboard Inteligente":
+    require_role("NURSE", "ASSISTANT", "ADMIN")
+    st.markdown("## 📊 Inteligência de Adoção e Performance (T1-T4)")
+
+    hoje = utc_now().replace(hour=0, minute=0, second=0).isoformat()
+    with get_db() as conn:
+        c = conn.cursor()
+        t_hoje = c.execute("SELECT COUNT(*) FROM reports WHERE clinic_id = ? AND received_at >= ?", (CLINICA_ATUAL_ID, hoje)).fetchone()[0]
+        t_pend = c.execute(f"SELECT COUNT(*) FROM reports WHERE clinic_id = ? AND status IN {ACTIVE_STATUSES}", (CLINICA_ATUAL_ID,)).fetchone()[0]
+        reports_geral = c.execute("SELECT * FROM reports WHERE clinic_id = ?", (CLINICA_ATUAL_ID,)).fetchall()
+        t_pats = c.execute("SELECT COUNT(*) FROM patients WHERE clinic_id = ?", (CLINICA_ATUAL_ID,)).fetchone()[0]
+        t_engag = c.execute("SELECT COUNT(DISTINCT patient_id) FROM reports WHERE clinic_id = ?", (CLINICA_ATUAL_ID,)).fetchone()[0]
+
+    sla_violados_historicos = 0
+    t1_list, t2_list, t3_list, t4_list = [], [], [], []
+
+    for r in reports_geral:
+        rec_dt = datetime.fromisoformat(r['received_at'])
+        sla_alvo = r['sla_target_minutes'] if r['sla_target_minutes'] else SLA_BY_PRIORITY.get(r['operational_priority'], SLA_MINUTOS_PADRAO)
+
+        if r['sla_breached'] == 1 or (r['status'] == STATUS_RECEIVED and (utc_now() - rec_dt).total_seconds() / 60 > sla_alvo):
+            sla_violados_historicos += 1
+
+        if r['acknowledged_at']:
+            ack_dt = datetime.fromisoformat(r['acknowledged_at'])
+            t1_list.append((ack_dt - rec_dt).total_seconds() / 60)
+            if r['escalated_at']:
+                esc_dt = datetime.fromisoformat(r['escalated_at'])
+                t2_list.append((esc_dt - ack_dt).total_seconds() / 60)
+                if r['doctor_responded_at']:
+                    doc_dt = datetime.fromisoformat(r['doctor_responded_at'])
+                    t3_list.append((doc_dt - esc_dt).total_seconds() / 60)
+        if r['resolved_at']:
+            res_dt = datetime.fromisoformat(r['resolved_at'])
+            t4_list.append((res_dt - rec_dt).total_seconds() / 60)
+
+    avg_t1 = int(sum(t1_list)/len(t1_list)) if t1_list else 0
+    avg_t2 = int(sum(t2_list)/len(t2_list)) if t2_list else 0
+    avg_t3 = int(sum(t3_list)/len(t3_list)) if t3_list else 0
+    avg_t4 = round((sum(t4_list)/len(t4_list))/60, 1) if t4_list else 0
+    perc_engajamento = int((t_engag / t_pats) * 100) if t_pats > 0 else 0
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.markdown(f"<div class='metric-card'><div class='metric-val'>{t_hoje}</div><p>Entradas Hoje</p></div>", unsafe_allow_html=True)
+    c2.markdown(f"<div class='metric-card'><div class='metric-val'>{t_pend}</div><p>Ativos na Fila</p></div>", unsafe_allow_html=True)
+    c3.markdown(f"<div class='metric-card'><div class='metric-val' style='color:#991B1B;'>{sla_violados_historicos}</div><p>SLA de Triagem Violados</p></div>", unsafe_allow_html=True)
+    c4.markdown(f"<div class='metric-card'><div class='metric-val' style='color:#10B981;'>{perc_engajamento}%</div><p>Pacientes com Relato</p></div>", unsafe_allow_html=True)
+
+    st.markdown("#### Tempos Médios de Acompanhamento (Ciclo T1 a T4)")
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("T1 - Reconhecimento (Triagem)", f"{avg_t1} min")
+    c6.metric("T2 - Escalonamento", f"{avg_t2} min")
+    c7.metric("T3 - Tempo de Resposta Médica", f"{avg_t3} min")
+    c8.metric("T4 - Tempo Total até Resolução", f"{avg_t4} horas")
+
+elif menu == "📥 Fila Operacional":
+    require_role("NURSE", "ASSISTANT", "ADMIN")
+    st.markdown("## 📥 Triagem Operacional")
+    
+    col_title, col_btn = st.columns([4, 1])
+    with col_btn:
+        if st.button("🔄 Atualizar Fila", use_container_width=True): st.rerun()
+
+    with get_db() as conn:
+        active_users = conn.cursor().execute("SELECT id, name, role FROM users WHERE clinic_id = ? AND active = 1 AND role IN ('NURSE', 'ASSISTANT', 'ADMIN')", (CLINICA_ATUAL_ID,)).fetchall()
+        reports = conn.cursor().execute(f"""
+            SELECT r.*, p.name as patient_name, p.phone as patient_phone, u.name as assigned_user_name
+            FROM reports r 
+            JOIN patients p ON r.patient_id = p.id 
+            LEFT JOIN users u ON r.assigned_user_id = u.id
+            WHERE r.status IN {ACTIVE_STATUSES} AND r.clinic_id = ?
+            ORDER BY 
+                CASE 
+                    WHEN r.operational_priority = 1 THEN 1
+                    WHEN r.status = 'PENDING_NURSE' THEN 2
+                    WHEN r.operational_priority = 2 THEN 3
+                    ELSE 4
+                END, r.received_at ASC
+        """, (CLINICA_ATUAL_ID,)).fetchall()
+
+    if not reports: st.success("🎉 Fila limpa e organizada. Nenhum paciente aguardando no momento.")
+
+    for r in reports:
+        ref_date = r['received_at']
+        if r['status'] == STATUS_ACKNOWLEDGED and r['acknowledged_at']: ref_date = r['acknowledged_at']
+        elif r['status'] == STATUS_ESCALATED and r['escalated_at']: ref_date = r['escalated_at']
+        elif r['status'] == STATUS_PENDING_NURSE and r['doctor_responded_at']: ref_date = r['doctor_responded_at']
+
+        if not ref_date:
+            ref_date = r['received_at']
+
+        espera = int((utc_now() - datetime.fromisoformat(ref_date)).total_seconds() / 60)
+        box_style = "border: 1px solid #E2E8F0;"
+        sla_alvo = r['sla_target_minutes'] if r['sla_target_minutes'] else SLA_BY_PRIORITY.get(r['operational_priority'], SLA_MINUTOS_PADRAO)
+        minutos_restantes = sla_alvo - espera
+
+        safe_patient_name = html.escape(r['patient_name'])
+        
+        expander_title = ""
+        
+        if r['operational_priority'] == 1:
+            expander_title = f"🚨 EMERGÊNCIA: {safe_patient_name} | Dor: {r['pain']}/10 | Há {espera}m"
+        elif r['status'] == STATUS_RECEIVED:
+            if minutos_restantes > 5:
+                expander_title = f"🟢 NOVO: {safe_patient_name} | Dor: {r['pain']}/10 | Há {espera}m"
+            elif minutos_restantes >= 0:
+                expander_title = f"🟡 ATENÇÃO: {safe_patient_name} | Dor: {r['pain']}/10 | Há {espera}m"
+            else:
+                expander_title = f"🔴 ATRASADO: {safe_patient_name} | Atraso: {abs(minutos_restantes)}m"
+        elif r['status'] == STATUS_ACKNOWLEDGED:
+            expander_title = f"🔵 EM ATENDIMENTO: {safe_patient_name} | Resp: {r['assigned_user_name']}"
+        elif r['status'] == STATUS_ESCALATED:
+            expander_title = f"🟠 AVALIAÇÃO MÉDICA: {safe_patient_name} | Aguardando Médico"
+        elif r['status'] == STATUS_PENDING_NURSE:
+            expander_title = f"🟣 ORDEM MÉDICA PENDENTE: {safe_patient_name} | Executar Conduta"
+        else:
+            expander_title = f"✅ {safe_patient_name} | {r['status']}"
+
+        if r['status'] == STATUS_RECEIVED:
+            if minutos_restantes > 5:
+                status_display = f"🟢 Protocolo Normal (Espera na Triagem: {espera}m / Alvo: {sla_alvo}m)"
+            elif minutos_restantes >= 0:
+                status_display = f"🟡 Atenção Operacional (Espera na Triagem: {espera}m / Alvo: {sla_alvo}m)"
+                box_style = "border: 2px solid #F59E0B;"
+            else:
+                status_display = f"🔴 Limite de SLA de Triagem Rompido (Atraso: {abs(minutos_restantes)}m / Alvo: {sla_alvo}m)"
+                box_style = "border: 2px solid #EF4444;"
+        elif r['status'] == STATUS_ACKNOWLEDGED: status_display = f"🔵 Em Atendimento Operacional (Há {espera}m)"
+        elif r['status'] == STATUS_ESCALATED: status_display = f"🟠 Com Avaliador Médico (Aguardando Resposta há {espera}m)"
+        elif r['status'] == STATUS_PENDING_NURSE: status_display = f"🟣 Ordem Médica Pendente de Execução (Fila Técnica há {espera}m)"
+        else: status_display = f"🟢 Estado Técnico: {r['status']}"
+
+        resp_text = f" | Resp: {html.escape(r['assigned_user_name'])}" if r['assigned_user_name'] else ""
+
+        if r['operational_priority'] == 1:
+            box_style = "border: 2px solid #991B1B; background-color: #FEF2F2;"
+            status_display = f"🚨 PRIORIDADE 1 — DECLARAÇÃO DE EMERGÊNCIA DO PACIENTE <br> {status_display} {resp_text}"
+        else: status_display += resp_text
+
+        with st.expander(f"**{expander_title}**", expanded=False):
+            st.markdown(f"<div style='padding:15px; border-radius:8px; margin-bottom:15px; {box_style}'><b>{safe_patient_name}</b> — {status_display}</div>", unsafe_allow_html=True)
+
+            if r['status'] == STATUS_PENDING_NURSE: st.info(f"👨‍⚕️ Instrução Médica: **{html.escape(r['conduct'])}**")
+            elif r['status'] != STATUS_ESCALATED:
+                st.markdown(f"**Escala Numérica de Dor:** {r['pain']}/10 | **Declaração de Evolução:** {html.escape(r['trend'])}")
+                if r['transcript_original']: st.caption(f"📝 *\"{html.escape(r['transcript_original'])}\"*")
+
+                audio_path = f"patient_audios/{r['report_uuid']}.wav"
+                if os.path.exists(audio_path):
+                    st.audio(audio_path)
+
+            st.divider()
+
+            if r['status'] == STATUS_RECEIVED:
+                if st.button("Assumir Responsabilidade", key=f"rev_{r['id']}", type="primary"):
+                    ok, msg = DatabaseService.transition_internal_report(CLINICA_ATUAL_ID, r['report_uuid'], STATUS_ACKNOWLEDGED, OPERADOR_ID, ROLE_ATUAL, OPERADOR_ATUAL, "Profissional assumiu acompanhamento.")
+                    if ok: st.rerun()
+                    else: st.error(msg)
+
+            elif r['status'] in [STATUS_ACKNOWLEDGED, STATUS_PENDING_NURSE]:
+                if r['assigned_user_id'] != OPERADOR_ID:
+                    if ROLE_ATUAL in ["NURSE", "ADMIN"]:
+                        with st.popover("🔄 Reatribuir Responsável"):
+                            user_opts = [(u['id'], f"{u['name']} ({u['role']})") for u in active_users]
+                            sel_user_id = st.selectbox("Selecione o novo responsável:", options=[u[0] for u in user_opts], format_func=lambda x: [u[1] for u in user_opts if u[0] == x][0])
+                            if st.button("Confirmar Reatribuição", key=f"reassign_{r['id']}"):
+                                ok, msg = DatabaseService.reassign_internal_report(CLINICA_ATUAL_ID, r['report_uuid'], OPERADOR_ID, ROLE_ATUAL, OPERADOR_ATUAL, sel_user_id)
+                                if ok: st.rerun()
+                                else: st.error(msg)
+                else:
+                    if r['status'] == STATUS_ACKNOWLEDGED:
+                        c1, c2, c3 = st.columns(3)
+                        with c1:
+                            if r['patient_declared_emergency'] == 1:
+                                st.warning("⚠️ Casos de Emergência devem ser Escalonados ao médico.")
+                            else:
+                                with st.popover("✅ Encerrar Workflow"):
+                                    acao = st.selectbox("Ação", ["Dúvida Sanada Remotamente", "Agendamento Efetuado"])
+                                    if st.button("Confirmar", key=f"res_{r['id']}", type="primary"):
+                                        ok, msg = DatabaseService.transition_internal_report(CLINICA_ATUAL_ID, r['report_uuid'], STATUS_RESOLVED, OPERADOR_ID, ROLE_ATUAL, OPERADOR_ATUAL, f"Workflow Encerrado: [{acao}]", conduct=acao, resolution_source="TEAM")
+                                        if ok: st.rerun()
+                                        else: st.error(msg)
+
+                        with c2:
+                            with st.popover("💬 Chamar no WhatsApp"):
+                                st.caption(f"Contato Direto: {r['patient_phone']}")
+                                custom_msg = st.text_area("Digite a mensagem para enviar:", key=f"wpp_msg_{r['id']}")
+                                if custom_msg.strip():
+                                    link_wpp = f"https://wa.me/{r['patient_phone']}?text={urllib.parse.quote(custom_msg.strip())}"
+                                    st.markdown(f'<a href="{link_wpp}" target="_blank" style="display:inline-block; background-color:#25D366; color:white; padding:8px 12px; border-radius:5px; text-decoration:none; font-weight:bold; margin-top:10px;">🚀 Abrir WhatsApp Web</a>', unsafe_allow_html=True)
+
+                        with c3:
+                            if ROLE_ATUAL in ["NURSE", "ADMIN"]:
+                                with st.popover("🩺 Escalonar Médico"):
+                                    obs_medico = st.text_area("Observação curta da triagem:", key=f"obs_doc_{r['id']}")
+                                    if st.button("Gerar Link e Escalonar", key=f"esc_{r['id']}", type="primary"):
+                                        doc_tk = DatabaseService.escalate_to_doctor(CLINICA_ATUAL_ID, r['report_uuid'], OPERADOR_ID, OPERADOR_ATUAL, ROLE_ATUAL)
+                                        if doc_tk:
+                                            full_doc_url = f"{PUBLIC_BASE_URL}/?view=doctor&token={doc_tk}"
+                                            st.success("Link gerado! Clique abaixo para enviar:")
+                                            msg_final = f"🚨 *Solicitação de Avaliação Médica - VitaVoz*\n\n*Paciente:* {safe_patient_name}\n*Observação:* {obs_medico.strip()}\n\nAcesse o prontuário: {full_doc_url}"
+                                            msg_encoded = urllib.parse.quote(msg_final)
+                                            wpp_link = f"https://wa.me/?text={msg_encoded}"
+                                            st.markdown(f'<a href="{wpp_link}" target="_blank" style="display:inline-block; background-color:#25D366; color:white; padding:8px 12px; border-radius:5px; text-decoration:none; font-weight:bold; margin-top:10px;">📲 Enviar para o Médico</a>', unsafe_allow_html=True)
+                                        else:
+                                            st.error("Erro no escalonamento.")
+
+                    elif r['status'] == STATUS_PENDING_NURSE:
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            if st.button("Confirmar Execução de Ordem", key=f"resn_{r['id']}", type="primary"):
+                                ok, msg = DatabaseService.transition_internal_report(CLINICA_ATUAL_ID, r['report_uuid'], STATUS_RESOLVED, OPERADOR_ID, ROLE_ATUAL, OPERADOR_ATUAL, "Equipe executou instrução médica e encerrou workflow.", resolution_source="TEAM_VIA_DOCTOR")
+                                if ok: st.rerun()
+                                else: st.error(msg)
+
+                        with c2:
+                            with st.popover("💬 Repassar Ordem no WhatsApp"):
+                                st.caption(f"Contato Direto: {r['patient_phone']}")
+                                custom_msg = st.text_area("Digite a mensagem (ex: receita médica):", key=f"wpp_doc_msg_{r['id']}")
+                                if custom_msg.strip():
+                                    link_wpp = f"https://wa.me/{r['patient_phone']}?text={urllib.parse.quote(custom_msg.strip())}"
+                                    st.markdown(f'<a href="{link_wpp}" target="_blank" style="display:inline-block; background-color:#25D366; color:white; padding:8px 12px; border-radius:5px; text-decoration:none; font-weight:bold; margin-top:10px;">🚀 Abrir WhatsApp Web</a>', unsafe_allow_html=True)
+
+elif menu == "🗂️ Histórico de Pacientes":
+    require_role("NURSE", "ASSISTANT", "ADMIN")
+    st.markdown("## 🗂️ Rastreabilidade Clínica")
+
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.caption("Visão de registro operacional do acompanhamento e auditoria de eventos.")
+    with col2:
+        if st.button("🛡️ Verificar Hash Chain"):
+            valido, msg = DatabaseService.verify_hash_chain(CLINICA_ATUAL_ID)
+            if valido: st.success(msg)
+            else: st.error(msg)
+
+    with get_db() as conn:
+        patients = conn.cursor().execute("SELECT id, name, procedure_date, phone, allergies, revoked_at FROM patients WHERE clinic_id = ? AND active = 1 ORDER BY id DESC", (CLINICA_ATUAL_ID,)).fetchall()
+
+    if not patients:
+        st.info("Nenhum paciente cadastrado.")
+        st.stop()
+
+    patient_opts = {p['id']: f"{p['name']} ({format_iso_to_br_date(p['procedure_date'])})" for p in patients}
+    sel_pid = st.selectbox("Selecione o Paciente para visualizar o histórico:", options=list(patient_opts.keys()), format_func=lambda x: patient_opts[x])
+
+    if sel_pid:
+        p = [p for p in patients if p['id'] == sel_pid][0]
+
+        if ROLE_ATUAL in ["NURSE", "ADMIN"]:
+            st.caption(f"📞 Contato: {p['phone']} | Alergias: {p['allergies']}")
+            if not p['revoked_at']:
+                if st.button("Revogar Acesso", key=f"rev_{p['id']}"):
+                    with get_db() as conn:
+                        conn.cursor().execute("UPDATE patients SET active = 0, revoked_at = ? WHERE id = ? AND clinic_id = ? AND active = 1", (utc_now().isoformat(), p['id'], CLINICA_ATUAL_ID))
+                        conn.commit()
+                    DatabaseService.log_audit(CLINICA_ATUAL_ID, "NONE", p['id'], ACTOR_INTERNAL, OPERADOR_ATUAL, OPERADOR_ID, "PATIENT_ACCESS_REVOKED", "NONE", "NONE", "Acesso do paciente revogado e conta desativada.")
+                    st.rerun()
+        else:
+            st.caption("🔒 Dados operacionais sensíveis de contato e alergias restritos aos perfis de liderança (NURSE/ADMIN).")
+
+        st.markdown("##### Auditoria de Eventos (Append-Only com Elo de Hash Chain SHA-256)")
+        with get_db() as conn:
+            audits = conn.cursor().execute("SELECT * FROM audit_events WHERE patient_id = ? AND clinic_id = ? ORDER BY timestamp ASC", (p['id'], CLINICA_ATUAL_ID)).fetchall()
+        for aud in audits:
+            st.write(f"`{format_local_time(aud['timestamp'])}` — **{aud['action']}** ({aud['actor_name']}): {aud['details']}")
+
+elif menu == "🔗 Cadastrar Paciente":
+    require_role("NURSE", "ADMIN")
+    st.markdown("## Novo Protocolo de Acompanhamento")
+
+    with get_db() as conn:
+        c_info = conn.cursor().execute("SELECT protocol_duration_days FROM clinics WHERE id = ?", (CLINICA_ATUAL_ID,)).fetchone()
+    dias_protocolo = c_info['protocol_duration_days'] if c_info else 15
+
+    with st.form("form_pac"):
+        n = st.text_input("Identificação do Paciente")
+        tel = st.text_input("Contato Telefônico (WhatsApp com DDD)")
+        proc = st.text_input("Procedimento Realizado")
+        d_proc = st.date_input("Data da Cirurgia")
+        alergias = st.text_input("Alergias Sistêmicas (Opcional)")
+
+        if st.form_submit_button("Gerar Acesso"):
+            tel_normalized = normalize_phone(tel)
+            if n and tel_normalized and proc and d_proc:
+                raw_token = generate_secure_token()
+                proc_iso_date = d_proc.strftime("%Y-%m-%d")
+                proc_date_obj = datetime.strptime(proc_iso_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                exp = (proc_date_obj + timedelta(days=dias_protocolo)).isoformat()
+
+                with get_db() as conn:
+                    c = conn.cursor()
+                    c.execute("BEGIN IMMEDIATE")
+                    c.execute("UPDATE patients SET active = 0, revoked_at = ? WHERE phone = ? AND clinic_id = ? AND revoked_at IS NULL", (utc_now().isoformat(), tel_normalized, CLINICA_ATUAL_ID))
+                    c.execute("INSERT INTO patients (clinic_id, name, phone, procedure_name, procedure_date, allergies, token_hash, token_expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (CLINICA_ATUAL_ID, n, tel_normalized, proc, proc_iso_date, alergias, hash_token(raw_token), exp, utc_now().isoformat()))
+                    new_pid = c.lastrowid
+                    conn.commit()
+                DatabaseService.log_audit(CLINICA_ATUAL_ID, "NONE", new_pid, ACTOR_INTERNAL, OPERADOR_ATUAL, OPERADOR_ID, "PATIENT_CREATED", "NONE", "NONE", "Acesso gerado.")
+
+                patient_link = f"{PUBLIC_BASE_URL}/?view=portal&token={raw_token}"
+                st.success(f"Link de acompanhamento ativo por {dias_protocolo} dias:\n`{patient_link}`")
+
+                msg_patient_enc = urllib.parse.quote(f"Olá {n}, aqui está o seu link seguro de acompanhamento pós-operatório (VitaVoz): {patient_link}")
+
+                wpp_patient = f"https://wa.me/{tel_normalized}?text={msg_patient_enc}"
+
+                st.markdown(f'<a href="{wpp_patient}" target="_blank" style="display:inline-block; background-color:#25D366; color:white; padding:8px 12px; border-radius:5px; text-decoration:none; font-weight:bold;">💬 Enviar Link ao Paciente via WhatsApp</a>', unsafe_allow_html=True)
+            else: st.error("Todos os campos básicos são obrigatórios.")
+
+elif menu == "👥 Usuários e Acessos":
+    require_role("ADMIN")
+    st.markdown("## 👥 Gestão de Usuários da Clínica")
+    st.caption("Módulo exclusivo para Administradores configurarem a equipe operacional.")
+
+    with st.expander("➕ Cadastrar Novo Profissional"):
+        with st.form("new_user_form"):
+            new_name = st.text_input("Nome do Profissional")
+            new_username = st.text_input("Usuário (Login)")
+            new_pwd = st.text_input("Senha Inicial (Mín. 12 caracteres)", type="password")
+            new_role = st.selectbox("Papel no Sistema", ["NURSE", "ASSISTANT"])
+            if st.form_submit_button("Criar Acesso", type="primary"):
+                if len(new_pwd) < 12: st.error("A senha deve ter no mínimo 12 caracteres.")
+                elif not new_name or not new_username: st.error("Nome e Usuário são obrigatórios.")
+                else:
+                    norm_user = new_username.strip().lower()
+                    try:
+                        with get_db() as conn:
+                            c = conn.cursor()
+                            c.execute("INSERT INTO users (clinic_id, name, username, password_hash, role) VALUES (?, ?, ?, ?, ?)", (CLINICA_ATUAL_ID, new_name, norm_user, hash_password(new_pwd), new_role))
+                            conn.commit()
+                        DatabaseService.log_audit(CLINICA_ATUAL_ID, "NONE", None, ACTOR_INTERNAL, OPERADOR_ATUAL, OPERADOR_ID, "USER_CREATED", "NONE", "NONE", f"Novo usuário criado: {norm_user} ({new_role})")
+                        st.success(f"Usuário {norm_user} criado com sucesso.")
+                        st.rerun()
+                    except sqlite3.IntegrityError:
+                        st.error("Este nome de usuário já está em uso.")
+
+    st.markdown("##### Equipe Cadastrada")
+    with get_db() as conn:
+        users_list = conn.cursor().execute("SELECT id, name, username, role, active FROM users WHERE clinic_id = ?", (CLINICA_ATUAL_ID,)).fetchall()
+
+    for u in users_list:
+        c1, c2, c3 = st.columns([3, 1, 1])
+        c1.write(f"• **{u['name']}** (`{u['username']}`) — Papel: **{u['role']}**")
+        c2.write("🟢 Ativo" if u['active'] == 1 else "🔴 Inativo")
+        if u['id'] != OPERADOR_ID:
+            btn_label = "Desativar" if u['active'] == 1 else "Reativar"
+            new_active_val = 0 if u['active'] == 1 else 1
+            if c3.button(btn_label, key=f"tog_u_{u['id']}"):
+                with get_db() as conn:
+                    conn.cursor().execute("UPDATE users SET active = ? WHERE id = ? AND clinic_id = ?", (new_active_val, u['id'], CLINICA_ATUAL_ID))
+                    conn.commit()
+                act_str = "USER_DEACTIVATED" if new_active_val == 0 else "USER_REACTIVATED"
+                DatabaseService.log_audit(CLINICA_ATUAL_ID, "NONE", None, ACTOR_INTERNAL, OPERADOR_ATUAL, OPERADOR_ID, act_str, "NONE", "NONE", f"Usuário {u['username']} (ID #{u['id']}) foi {'desativado' if new_active_val == 0 else 'reativado'}.")
+                st.rerun()
+
+elif menu == "🩺 Health Check Operacional":
+    require_role("ADMIN")
+    st.markdown("## 🩺 Observabilidade & Health Check")
+    st.caption("Verificação em tempo real da infraestrutura técnica e métricas da clínica.")
+
+    h_status = HealthService.get_status(CLINICA_ATUAL_ID)
+
+    if h_status.get("healthy"):
+        st.success("🟢 Infraestrutura Íntegra (HEALTHY)")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Conexão Banco", h_status["db_connection"])
+        c2.metric("Modo do Banco", h_status["journal_mode"])
+        c3.metric("Versão do Schema", h_status["schema_version"])
+
+        c4, c5 = st.columns(2)
+        c4.metric("Último Backup Criptografado", h_status["last_backup"])
+        c5.metric("SLAs de Triagem Violados", h_status["breached_slas"])
+    else:
+        st.error(f"🔴 Erro de Serviço: {h_status.get('error')}")
+
+elif menu == "⚙️ Segurança da Conta":
+    st.markdown("## Conformidade e Backup da Conta")
+
+    if ROLE_ATUAL == "ADMIN":
+        st.markdown("##### 📦 Backup Operacional Criptografado (Scrypt / AES-256-GCM)")
+        st.info("ℹ️ **Aviso do Piloto:** A restauração de banco de dados via interface foi desativada por segurança técnica. Os backups (.enc) criptografados com AES-256-GCM podem ser gerados e baixados livremente abaixo.")
+
+        if st.button("Gerar Cópia Criptografada do Banco (.enc)", type="primary"):
+            try:
+                encrypted_data = BackupService.generate_backup_encrypted(BACKUP_ENCRYPTION_KEY)
+                backup_filename = f"backup_vitavoz_{CLINICA_ATUAL_ID}_{int(time.time())}.enc"
+                st.download_button("📥 Baixar Arquivo .enc Protegido (AES-256)", encrypted_data, file_name=backup_filename, mime="application/octet-stream")
+                DatabaseService.log_audit(CLINICA_ATUAL_ID, "NONE", None, ACTOR_INTERNAL, OPERADOR_ATUAL, OPERADOR_ID, "DATABASE_BACKUP", "NONE", "NONE", f"Backup gerado: {backup_filename}")
+            except Exception as e:
+                st.error(f"Erro ao gerar backup: {str(e)}")
+        st.divider()
+
+    with st.form("pwd_form"):
+        senha_atual = st.text_input("Senha Atual", type="password")
+        nova_senha = st.text_input("Nova Senha (Mín. 12 caracteres)", type="password")
+        if st.form_submit_button("Alterar Senha", type="primary"):
+            if len(nova_senha) < 12: st.error("Mínimo de 12 caracteres exigidos.")
+            else:
+                with get_db() as conn:
+                    user = conn.cursor().execute("SELECT password_hash FROM users WHERE id = ?", (OPERADOR_ID,)).fetchone()
+                    if verify_password(senha_atual, user['password_hash']):
+                        conn.cursor().execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(nova_senha), OPERADOR_ID))
+                        conn.commit()
+                        DatabaseService.log_audit(CLINICA_ATUAL_ID, "NONE", None, ACTOR_INTERNAL, OPERADOR_ATUAL, OPERADOR_ID, "PASSWORD_CHANGED", "NONE", "NONE", "Senha atualizada.")
+                        st.success("Senha alterada com segurança.")
+                    else: st.error("Senha de verificação incorreta.")
+--- START OF FILE Cursor.rtf ---
+
+import base64
+
+# ... (suas importações continuam iguais) ...
+
+# 1. Função para carregar a imagem da logo e converter para HTML
+def get_base64_image(image_path):
+    try:
+        with open(image_path, "rb") as img_file:
+            return base64.b64encode(img_file.read()).decode()
+    except FileNotFoundError:
+        return ""
+
+logo_base64 = get_base64_image("logo_vitavoz.png")
+
+# 2. Configuração da Página
+st.set_page_config(page_title="VitaVoz | Gestão Operacional", layout="wide", page_icon="🛡️")
+
+# 3. O SUPER CSS FUTURISTA (Injeção de Estilo)
+st.markdown(f"""
+    <style>
+    /* Esconde a barra superior chata do Streamlit */
+    #MainMenu {{visibility: hidden;}}
+    header {{visibility: hidden;}}
+    footer {{visibility: hidden;}}
+
+    /* Fundo da aplicação */
+    .stApp {{
+        background-color: #050d18; /* Azul escuro profundo da sua marca */
+    }}
+
+    /* Estilização da Barra Lateral (Sidebar Glassmorphism) */
+    [data-testid="stSidebar"] {{
+        background: linear-gradient(180deg, #07111f 0%, #0b1626 100%);
+        border-right: 1px solid rgba(56, 189, 248, 0.1);
+    }}
+
+    /* Transformando os Radio Buttons (O Menu) em Botões Futuristas */
+    /* 1. Esconde as bolinhas do radio button */
+    div[role="radiogroup"] > label > div:first-child {{
+        display: none !important;
+    }}
+    
+    /* 2. Formato do Botão Inativo */
+    div[role="radiogroup"] > label {{
+        background: rgba(15, 23, 42, 0.4);
+        border: 1px solid rgba(148, 163, 184, 0.1);
+        border-radius: 12px;
+        padding: 12px 16px;
+        margin-bottom: 8px;
+        transition: all 0.3s ease;
+        color: #94a3b8;
+        font-weight: 600;
+        cursor: pointer;
+    }}
+    
+    /* 3. Efeito Hover (Passar o mouse) */
+    div[role="radiogroup"] > label:hover {{
+        border-color: rgba(56, 189, 248, 0.5); /* Borda ciano */
+        background: rgba(56, 189, 248, 0.05);
+        color: #e2e8f0;
+        transform: translateX(4px); /* Botão anda um pouco pra direita */
+    }}
+
+    /* 4. Formato do Botão ATIVO (Selecionado) */
+    div[role="radiogroup"] > label[data-baseweb="radio"][aria-checked="true"] {{
+        background: linear-gradient(90deg, rgba(56,189,248,0.15) 0%, rgba(139,92,246,0.15) 100%);
+        border: 1px solid #38bdf8; /* Ciano da logo */
+        box-shadow: 0 0 15px rgba(56, 189, 248, 0.2); /* Brilho neon */
+        color: #ffffff;
+    }}
+
+    /* Container da Logo na Sidebar */
+    .sidebar-logo-container {{
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        padding: 10px 0 30px 0;
+        border-bottom: 1px solid rgba(255,255,255,0.05);
+        margin-bottom: 20px;
+    }}
+    .sidebar-logo {{
+        width: 160px;
+        max-width: 100%;
+    }}
+    </style>
+""", unsafe_allow_html=True)
+
+
+# ==============================================================================
+# LÁ EMBAIXO: APLICANDO A LOGO NA SIDEBAR
+# ==============================================================================
+# Encontre a parte do seu código onde está escrito "with st.sidebar:" e mude para:
+
+with st.sidebar:
+    # Insere a logomarca no topo da barra lateral
+    if logo_base64:
+        st.markdown(
+            f"""
+            <div class="sidebar-logo-container">
+                <img src="data:image/png;base64,{logo_base64}" class="sidebar-logo">
+            </div>
+            """, 
+            unsafe_allow_html=True
+        )
+    else:
+        st.markdown("<h2 style='text-align: center; color: #38bdf8;'>VitaVoz</h2>", unsafe_allow_html=True)
+
+    st.markdown(f"<div style='color:#e2e8f0; font-size: 14px; font-weight:600; text-align:center; margin-bottom:20px;'>👤 {OPERADOR_ATUAL} <br><span style='color:#94a3b8; font-size:12px;'>({ROLE_ATUAL})</span></div>", unsafe_allow_html=True)
+    
     st.divider()
     menu_opcoes = ["📊 Dashboard Inteligente", "📥 Fila Operacional"]
     if ROLE_ATUAL in ["NURSE", "ASSISTANT", "ADMIN"]: menu_opcoes.append("🗂️ Histórico de Pacientes")
