@@ -119,18 +119,18 @@ st.markdown("""
         border-right: 1px solid rgba(56, 189, 248, 0.15);
     }
 
-    /* Container da Logo na Sidebar (MUITO MENOR AGORA) */
+    /* Container da Logo na Sidebar (ULTRA COMPACTO) */
     .sidebar-logo-container {
         display: flex;
         justify-content: center;
         align-items: center;
-        padding: 0px 0 20px 0;
+        padding: 5px 0 15px 0;
         border-bottom: 1px solid rgba(255,255,255,0.05);
         margin-bottom: 15px;
     }
     .sidebar-logo { 
-        width: 140px; /* <--- AQUI A LOGO FICOU PEQUENA E ELEGANTE */
-        max-width: 100%; 
+        width: 100px !important; /* <--- ULTRA PEQUENA E ELEGANTE */
+        height: auto;
     }
 
     /* Transformando os Radio Buttons da Sidebar em Blocos Neon (FINOS E LEVES) */
