@@ -35,7 +35,7 @@ IDEMPOTENCY_SECONDS = 30
 
 BOOTSTRAP_SECRET = os.environ.get("VITAVOZ_BOOTSTRAP_SECRET", "DEV_SECRET_KEY")
 BACKUP_ENCRYPTION_KEY = os.environ.get("VITAVOZ_BACKUP_KEY", BOOTSTRAP_SECRET)
-PUBLIC_BASE_URL = os.environ.get("VITAVOZ_BASE_URL", "http://localhost:8501")
+PUBLIC_BASE_URL = os.environ.get("VITAVOZ_BASE_URL", "https://www.vitavoz.com.br")
 
 if not BOOTSTRAP_SECRET:
     st.error("🚨 ERRO DE INFRAESTRUTURA: A variável 'VITAVOZ_BOOTSTRAP_SECRET' é obrigatória no servidor.")
