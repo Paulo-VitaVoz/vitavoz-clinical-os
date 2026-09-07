@@ -758,23 +758,29 @@ st.markdown('<div class="main-header">VitaVoz</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">Plataforma de Gestão Operacional do Acompanhamento Pós-Procedimento</div>', unsafe_allow_html=True)
 
 with st.sidebar:
-    # Cria uma logo pequena, alinhada à ESQUERDA, bem discreta no topo
-    if logo_base64:
-        st.markdown(
-            f"""
-            <div style="display: flex; justify-content: flex-start; align-items: center; padding-bottom: 20px; border-bottom: 1px solid rgba(255,255,255,0.05); margin-bottom: 15px;">
-                <img src="data:image/png;base64,{logo_base64}" style="width: 80px; height: auto;">
+    # DESENHO DIRETO DA LOGO NATIVA NO CANTO SUPERIOR ESQUERDO
+    st.markdown("""
+        <div style="display: flex; justify-content: flex-start; align-items: center; padding-bottom: 15px; border-bottom: 1px solid rgba(255,255,255,0.05); margin-bottom: 15px;">
+            <svg width="60px" height="60px" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <!-- Escudo de fundo -->
+                <path d="M50 10 C 72 10, 85 20, 85 42 C 85 68, 50 88, 50 88 C 50 88, 15 68, 15 42 C 15 20, 28 10, 50 10 Z" stroke="#38bdf8" stroke-width="6" fill="#0b1329"/>
+                <!-- Onda sonora central -->
+                <path d="M26 36 L 38 64 L 46 48" stroke="#38bdf8" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+                <!-- Barras do microfone/SLA -->
+                <rect x="43" y="38" width="4" height="24" rx="2" fill="#38bdf8"/>
+                <rect x="51" y="32" width="4" height="36" rx="2" fill="#38bdf8"/>
+                <rect x="59" y="42" width="4" height="16" rx="2" fill="#38bdf8"/>
+            </svg>
+            <div style="margin-left: 10px;">
+                <span style="font-size: 20px; font-weight: 900; color: white;">Vita<span style="color: #38bdf8;">Voz</span></span>
             </div>
-            """, 
-            unsafe_allow_html=True
-        )
-    else:
-        st.markdown("<h3 style='color: #38bdf8; margin-top: 0; padding-bottom: 10px;'>VitaVoz</h3><hr style='border-color: rgba(255,255,255,0.1); margin-top: 0;'>", unsafe_allow_html=True)
+        </div>
+    """, unsafe_allow_html=True)
 
-    # Informação do Usuário também menor e alinhada à esquerda
+    # Informação do Usuário alinhada à esquerda
     st.markdown(f"<div style='color:#e2e8f0; font-size: 13px; font-weight:600; margin-bottom:20px;'>👤 {html.escape(OPERADOR_ATUAL)} <br><span style='color:#94a3b8; font-size:11px;'>({ROLE_ATUAL})</span></div>", unsafe_allow_html=True)
 
-    # Menu
+    # Menu Normal
     menu_opcoes = ["📊 Dashboard Inteligente", "📥 Fila Operacional"]
     if ROLE_ATUAL in ["NURSE", "ASSISTANT", "ADMIN"]: menu_opcoes.append("🗂️ Histórico de Pacientes")
     if ROLE_ATUAL in ["NURSE", "ADMIN"]: menu_opcoes.append("🔗 Cadastrar Paciente")
